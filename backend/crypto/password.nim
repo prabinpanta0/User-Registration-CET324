@@ -1,21 +1,32 @@
-import nimcrypto, base64, random
+import nimcrypto, base64, os, strutils
+import nimcrypto/sysrand
 
-const SaltLength = 32
+const SaltLength* = 32 # Export SaltLength
+const DefaultPasswordHashRounds = 100_000
+
+proc getPasswordHashRounds(): int =
+  let roundsStr = getEnv("PASSWORD_HASH_ROUNDS", $DefaultPasswordHashRounds)
+  try:
+    result = parseInt(roundsStr)
+    if result <= 0: # Ensure positive number of rounds
+      result = DefaultPasswordHashRounds
+  except ValueError:
+    result = DefaultPasswordHashRounds
 
 proc generateSalt*(): string =
   # Generate a random salt
-  var saltBytes: array[SaltLength, byte]
-  for i in 0..<SaltLength:
-    saltBytes[i] = byte(rand(256))
-  result = encode(saltBytes)
+  var saltBytesArr: array[SaltLength, byte]
+  discard sysrand.randomBytes(saltBytesArr) # Call with the openArray, discard int return
+  result = encode(saltBytesArr)
 
 proc hashPassword*(password: string, salt: string): string =
   # Use multiple rounds of SHA256 for password hashing
   var combined = password & salt
-  var hash = $sha256.digest(combined)
+  var hash = $sha256.digest(combined) # nimcrypto's $ operator for digest
   
-  # Multiple rounds for additional security
-  for i in 0..<10000:
+  let rounds = getPasswordHashRounds()
+  # Subtract 1 because the first hash is already done
+  for i in 0..<(rounds - 1): # Ensure correct number of iterations
     hash = $sha256.digest(hash & salt)
   
   result = encode(hash)
