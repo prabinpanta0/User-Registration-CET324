@@ -21,3 +21,9 @@ CREATE TABLE sessions (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMP NOT NULL
 );
+
+CREATE TABLE blocked_ips (
+    ip_address TEXT PRIMARY KEY,
+    blocked_until TIMESTAMP WITH TIME ZONE NOT NULL,
+    reason TEXT
+);

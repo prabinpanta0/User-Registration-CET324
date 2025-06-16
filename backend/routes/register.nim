@@ -4,6 +4,14 @@ import ../db/db
 import ../utils/rate_limit
 import ../routes/login
 
+# Rate Limiting Configuration for Registration
+const registerAttemptConfig = RateLimitConfig(
+  routeIdentifier: "register_attempt",
+  maxAttemptsShortTerm: 10,       # Max 10 registration attempts
+  windowSecShortTerm: 3600,     # within a 1-hour window
+  blockDurationSecLongTerm: 86400 # Long-term DB block for 24 hours if limit exceeded
+)
+
 proc validPassword(password: string): bool =
   result = password.len >= 10 and 
            password.toSeq.anyIt(it.isUpperAscii) and 
@@ -22,9 +30,9 @@ proc verifyCaptcha(ip, captcha: string): bool =
 
 routes:
   post "/register":
-    let ip = "127.0.0.1"  # Fallback IP for now
-    if not checkRateLimit(ip, "register"):
-      resp Http429, "Too many attempts. Please try later."
+    let ip = "127.0.0.1"  # Fallback IP for now - TODO: Replace with actual client IP
+    if not isRequestAllowed(ip, registerAttemptConfig):
+      resp Http429, "Too many registration attempts. Please try later."
       return
 
     let body = parseJson(request.body)

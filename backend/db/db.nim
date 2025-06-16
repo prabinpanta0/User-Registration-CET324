@@ -64,8 +64,9 @@ proc dbUserExists*(username, email: string): bool =
     # Ensure database connection is active
     ensureDbConnection()
     
-    let query = "SELECT COUNT(*) FROM users WHERE username = '" & username & "' OR email = '" & email & "'"
-    let res = pg.pqexec(dbConn, cstring(query))
+    let query = "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2"
+    let params: array[2, cstring] = [username.cstring, email.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
     defer: pg.pqclear(res)
     
     let status = pg.pqresultStatus(res)
@@ -90,13 +91,13 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
     ensureDbConnection()
     
     echo "[DB DEBUG] Attempting to insert user: ", username, " email: ", email
-    # Note: This is simplified - in production you'd use parameterized queries
-    let query = "INSERT INTO users (username, email, password_hash, password_salt) VALUES ('" & 
-                username & "', '" & email & "', '" & hash & "', '" & salt & "')"
-    echo "[DB DEBUG] Query: ", query
+
+    let query = "INSERT INTO users (username, email, password_hash, password_salt) VALUES ($1, $2, $3, $4)"
+    let params: array[4, cstring] = [username.cstring, email.cstring, hash.cstring, salt.cstring]
+    echo "[DB DEBUG] Query: INSERT INTO users (username, email, password_hash, password_salt) VALUES ($1, $2, $3, $4) with params: ", username, ", ", email, ", HASH, SALT"
     
     # Execute query with detailed error reporting
-    let res = pg.pqexec(dbConn, cstring(query))
+    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
     defer: pg.pqclear(res)
     
     let status = pg.pqresultStatus(res)
@@ -119,12 +120,20 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
     result = false
 
 proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, recovery_codes_enc, last_login FROM users WHERE username = '" & userOrEmail & "' OR email = '" & userOrEmail & "'"
-  echo "[DB DEBUG] Query: ", query
-  let res = execQueryWithResult(query)
+  # Ensure database connection is active
+  ensureDbConnection()
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE username = $1 OR email = $2"
+  let params: array[2, cstring] = [userOrEmail.cstring, userOrEmail.cstring]
+  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
+
+  let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
+    # Note: The original query was selecting mfa_secret_enc at index 6, and recovery_codes_enc at 7, last_login at 8.
+    # With mfa_iv added, these indices shift.
+    # Original: id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5), mfa_secret_enc(6), recovery_codes_enc(7), last_login(8)
+    # New:      id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5), mfa_secret_enc(6), mfa_iv(7), recovery_codes_enc(8), last_login(9)
     echo "[DB DEBUG] Query status: ", status
     if status != pg.PGRES_TUPLES_OK:
       echo "[DB DEBUG] Query failed with status: ", status
@@ -142,17 +151,23 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
         passwordSalt: $pg.pqgetvalue(res, 0, 4),
         mfaEnabled: $pg.pqgetvalue(res, 0, 5) == "t",
         mfaSecretEnc: $pg.pqgetvalue(res, 0, 6),
-        recoveryCodesEnc: $pg.pqgetvalue(res, 0, 7),
-        lastLogin: $pg.pqgetvalue(res, 0, 8)
+        mfaIv: $pg.pqgetvalue(res, 0, 7), # Added mfaIv
+        recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
+        lastLogin: $pg.pqgetvalue(res, 0, 9)
       )
     else:
       result = User()  # Return empty user if no results
   finally:
-    pg.pqclear(res)  # Always free the result
+    pg.pqclear(res)
 
 proc dbGetUserById*(userId: int): User =
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, recovery_codes_enc, last_login FROM users WHERE id = " & $userId
-  let res = execQueryWithResult(query)
+  # Ensure database connection is active
+  ensureDbConnection()
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE id = $1"
+  let userIdStr = $userId
+  let params: array[1, cstring] = [userIdStr.cstring]
+
+  let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
@@ -162,6 +177,7 @@ proc dbGetUserById*(userId: int): User =
     let nrows = pg.pqntuples(res)
     if nrows > 0:
       # Get the first row
+      # Indices updated to match the new SELECT query including mfa_iv
       result = User(
         id: parseInt($pg.pqgetvalue(res, 0, 0)),
         username: $pg.pqgetvalue(res, 0, 1),
@@ -170,31 +186,40 @@ proc dbGetUserById*(userId: int): User =
         passwordSalt: $pg.pqgetvalue(res, 0, 4),
         mfaEnabled: $pg.pqgetvalue(res, 0, 5) == "t",
         mfaSecretEnc: $pg.pqgetvalue(res, 0, 6),
-        recoveryCodesEnc: $pg.pqgetvalue(res, 0, 7),
-        lastLogin: $pg.pqgetvalue(res, 0, 8)
+        mfaIv: $pg.pqgetvalue(res, 0, 7), # Added mfaIv
+        recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
+        lastLogin: $pg.pqgetvalue(res, 0, 9)
       )
     else:
       result = User()  # Return empty user if no results
   finally:
-    pg.pqclear(res)  # Always free the result
+    pg.pqclear(res)
 
 proc dbInsertSession*(userId: int, token: string, expiresAt: string): bool =
   try:
-    # Convert epoch timestamp to PostgreSQL timestamp
-    let query = "INSERT INTO sessions (user_id, session_token, created_at, expires_at) VALUES (" & 
-                $userId & ", '" & token & "', now(), to_timestamp(" & expiresAt & "))"
+    ensureDbConnection()
+    let query = "INSERT INTO sessions (user_id, session_token, created_at, expires_at) VALUES ($1, $2, now(), to_timestamp($3))"
+    let userIdStr = $userId
+    let params: array[3, cstring] = [userIdStr.cstring, token.cstring, expiresAt.cstring]
+
     echo "[DB DEBUG] Inserting session: userId=", userId, " token=", token[0..10], "... expiresAt=", expiresAt
-    echo "[DB DEBUG] Session insert query: ", query
-    result = execQuery(query)
+    echo "[DB DEBUG] Session insert query: INSERT INTO sessions (user_id, session_token, created_at, expires_at) VALUES ($1, $2, now(), to_timestamp($3))"
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     echo "[DB DEBUG] Session insert result: ", result
   except Exception as e:
     echo "[DB ERROR] Session insert failed: ", e.msg
     result = false
 
 proc dbGetSessionByToken*(token: string): Session =
-  let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = '" & token & "' AND expires_at > now()"
-  echo "[DB DEBUG] Session lookup query: ", query
-  let res = execQueryWithResult(query)
+  ensureDbConnection()
+  let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = $1 AND expires_at > now()"
+  let params: array[1, cstring] = [token.cstring]
+  echo "[DB DEBUG] Session lookup query: SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = $1 AND expires_at > now() with param: ", token[0..min(token.len-1, 9)], "..."
+
+  let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
@@ -222,21 +247,35 @@ proc dbGetSessionByToken*(token: string): Session =
 
 proc dbDeleteSession*(token: string): bool =
   try:
-    let query = "DELETE FROM sessions WHERE session_token = '" & token & "'"
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "DELETE FROM sessions WHERE session_token = $1"
+    let params: array[1, cstring] = [token.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] dbDeleteSession failed: ", e.msg
     result = false
 
 proc dbSetUserMfaSecret*(userId: int, encSecret, iv: string): bool =
   try:
-    let query = "UPDATE users SET mfa_secret_enc = '" & encSecret & "', mfa_iv = '" & iv & "' WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "UPDATE users SET mfa_secret_enc = $1, mfa_iv = $2 WHERE id = $3"
+    let userIdStr = $userId
+    let params: array[3, cstring] = [encSecret.cstring, iv.cstring, userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] dbSetUserMfaSecret failed: ", e.msg
     result = false
 
 proc dbGetUserMfaSecret*(userId: int): (string, string) =
-  let query = "SELECT mfa_secret_enc, mfa_iv FROM users WHERE id = " & $userId
-  let res = execQueryWithResult(query)
+  ensureDbConnection()
+  let query = "SELECT mfa_secret_enc, mfa_iv FROM users WHERE id = $1"
+  let userIdStr = $userId
+  let params: array[1, cstring] = [userIdStr.cstring]
+  let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
@@ -253,42 +292,82 @@ proc dbGetUserMfaSecret*(userId: int): (string, string) =
 
 proc dbEnableUserMfa*(userId: int): bool =
   try:
-    let query = "UPDATE users SET mfa_enabled = TRUE WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "UPDATE users SET mfa_enabled = TRUE WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] dbEnableUserMfa failed: ", e.msg
     result = false
 
 proc dbUpdateUserPassword*(userId: int, hash, salt: string): bool =
   try:
-    let query = "UPDATE users SET password_hash = '" & hash & "', password_salt = '" & salt & "' WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "UPDATE users SET password_hash = $1, password_salt = $2 WHERE id = $3"
+    let userIdStr = $userId
+    let params: array[3, cstring] = [hash.cstring, salt.cstring, userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] dbUpdateUserPassword failed: ", e.msg
     result = false
 
 proc incrementFailedLogin*(userId: int): bool =
   try:
-    let query = "UPDATE users SET failed_login_count = failed_login_count + 1, last_failed_login = now() WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "UPDATE users SET failed_login_count = failed_login_count + 1, last_failed_login = now() WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] incrementFailedLogin failed: ", e.msg
     result = false
 
 proc resetFailedLogin*(userId: int): bool =
   try:
-    let query = "UPDATE users SET failed_login_count = 0 WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "UPDATE users SET failed_login_count = 0 WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] resetFailedLogin failed: ", e.msg
     result = false
 
 proc setLockout*(userId: int, until: string): bool =
   try:
-    let query = "UPDATE users SET lockout_until = '" & until & "' WHERE id = " & $userId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    # Assuming 'until' is a string that PostgreSQL can cast to a timestamp, e.g., epoch or ISO 8601
+    # If 'until' needs to be to_timestamp($1), then the parameter should be $1.
+    # Given it was directly concatenated, it's likely already a formatted string or epoch.
+    # For safety with parameterized queries, if it's an epoch, it should be passed as string and then used with to_timestamp($1) in query.
+    # If it's already a fully formatted timestamp string like 'YYYY-MM-DD HH:MM:SS', then direct assignment $1 should work.
+    # The original query was "UPDATE users SET lockout_until = '" & until & "' WHERE id = " & $userId
+    # This implies 'until' is already a string representation suitable for SQL.
+    let query = "UPDATE users SET lockout_until = $1 WHERE id = $2"
+    let userIdStr = $userId
+    let params: array[2, cstring] = [until.cstring, userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] setLockout failed: ", e.msg
     result = false
 
 proc getUserLockoutInfo*(userId: int): (int, string) =
-  let query = "SELECT failed_login_count, lockout_until FROM users WHERE id = " & $userId
-  let res = execQueryWithResult(query)
+  ensureDbConnection()
+  let query = "SELECT failed_login_count, lockout_until FROM users WHERE id = $1"
+  let userIdStr = $userId
+  let params: array[1, cstring] = [userIdStr.cstring]
+  let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
@@ -305,8 +384,11 @@ proc getUserLockoutInfo*(userId: int): (int, string) =
 
 proc listSessionsForUser*(userId: int): seq[Session] =
   result = @[]
-  let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE user_id = " & $userId
-  let res = execQueryWithResult(query)
+  ensureDbConnection()
+  let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE user_id = $1"
+  let userIdStr = $userId
+  let params: array[1, cstring] = [userIdStr.cstring]
+  let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
@@ -327,9 +409,15 @@ proc listSessionsForUser*(userId: int): seq[Session] =
 
 proc deleteSessionById*(sessionId: int): bool =
   try:
-    let query = "DELETE FROM sessions WHERE id = " & $sessionId
-    result = execQuery(query)
-  except:
+    ensureDbConnection()
+    let query = "DELETE FROM sessions WHERE id = $1"
+    let sessionIdStr = $sessionId
+    let params: array[1, cstring] = [sessionIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+  except Exception as e:
+    echo "[DB ERROR] deleteSessionById failed: ", e.msg
     result = false
 
 proc createSession*(userId: int): string =
@@ -352,12 +440,15 @@ proc createSession*(userId: int): string =
 
 proc dbUpdateUserLastLogin*(userId: int): bool =
   try:
-    # Store current timestamp in readable format
-    let now = times.now()
-    let currentTime = now.format("yyyy-MM-dd HH:mm:ss")
-    let query = "UPDATE users SET last_login = '" & currentTime & "' WHERE id = " & $userId
-    echo "[DB DEBUG] Updating last login for user ", userId, " to ", currentTime
-    result = execQuery(query)
+    ensureDbConnection()
+    # Store current timestamp using PostgreSQL's now() function for consistency
+    let query = "UPDATE users SET last_login = now() WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+    echo "[DB DEBUG] Updating last login for user ", userId
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     echo "[DB DEBUG] Last login update result: ", result
   except Exception as e:
     echo "[DB ERROR] Failed to update last login: ", e.msg
@@ -366,9 +457,12 @@ proc dbUpdateUserLastLogin*(userId: int): bool =
 proc dbListUserSessions*(userId: int): seq[Session] =
   result = @[]
   try:
-    let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE user_id = " & $userId & " AND expires_at > now() ORDER BY created_at DESC"
+    ensureDbConnection()
+    let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE user_id = $1 AND expires_at > now() ORDER BY created_at DESC"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
     echo "[DB DEBUG] Listing sessions for user ", userId
-    let res = execQueryWithResult(query)
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
     
     try:
       let status = pg.pqresultStatus(res)
@@ -395,10 +489,106 @@ proc dbListUserSessions*(userId: int): seq[Session] =
 
 proc dbRevokeSession*(sessionId: int): bool =
   try:
-    let query = "DELETE FROM sessions WHERE id = " & $sessionId
+    ensureDbConnection()
+    let query = "DELETE FROM sessions WHERE id = $1"
+    let sessionIdStr = $sessionId
+    let params: array[1, cstring] = [sessionIdStr.cstring]
     echo "[DB DEBUG] Revoking session with ID: ", sessionId
-    result = execQuery(query)
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     echo "[DB DEBUG] Session revoke result: ", result
   except Exception as e:
     echo "[DB ERROR] Failed to revoke session: ", e.msg
+    result = false
+
+# --- Blocked IP Management ---
+
+proc dbAddBlockedIp*(ipAddress: string, blockedUntilEpoch: string, reason: string): bool =
+  try:
+    ensureDbConnection()
+    # PostgreSQL's to_timestamp() expects a double precision Unix epoch value.
+    let query = "INSERT INTO blocked_ips (ip_address, blocked_until, reason) VALUES ($1, to_timestamp($2::double precision), $3) ON CONFLICT (ip_address) DO UPDATE SET blocked_until = EXCLUDED.blocked_until, reason = EXCLUDED.reason"
+    let params: array[3, cstring] = [ipAddress.cstring, blockedUntilEpoch.cstring, reason.cstring]
+
+    echo "[DB DEBUG] Adding/Updating blocked IP: ", ipAddress, " until epoch: ", blockedUntilEpoch, " for reason: ", reason
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbAddBlockedIp failed: ", $pg.pqerrorMessage(dbConn)
+      let resultError = $pg.pqresultErrorMessage(res)
+      if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+    echo "[DB DEBUG] dbAddBlockedIp result: ", result
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbAddBlockedIp: ", e.msg
+    result = false
+
+proc dbGetBlockedIp*(ipAddress: string): BlockedIp =
+  try:
+    ensureDbConnection()
+    # Select only if not expired
+    let query = "SELECT ip_address, extract(epoch from blocked_until)::text, reason FROM blocked_ips WHERE ip_address = $1 AND blocked_until > now()"
+    let params: array[1, cstring] = [ipAddress.cstring]
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
+      result = BlockedIp(
+        ipAddress: $pg.pqgetvalue(res, 0, 0),
+        blockedUntil: $pg.pqgetvalue(res, 0, 1), # This is now an epoch string
+        reason: $pg.pqgetvalue(res, 0, 2)
+      )
+    else:
+      # Check for errors other than no rows
+      if pg.pqresultStatus(res) != pg.PGRES_TUPLES_OK and pg.pqcmdTuples(res) == "0": # No rows is fine
+          echo "[DB ERROR] dbGetBlockedIp query failed: ", $pg.pqerrorMessage(dbConn)
+          let resultError = $pg.pqresultErrorMessage(res)
+          if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+      result = BlockedIp(ipAddress: "") # Return empty/default if not found or error
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbGetBlockedIp: ", e.msg
+    result = BlockedIp(ipAddress: "")
+
+proc dbRemoveBlockedIp*(ipAddress: string): bool =
+  try:
+    ensureDbConnection()
+    let query = "DELETE FROM blocked_ips WHERE ip_address = $1"
+    let params: array[1, cstring] = [ipAddress.cstring]
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+        echo "[DB ERROR] dbRemoveBlockedIp failed for IP ", ipAddress, ": ", $pg.pqerrorMessage(dbConn)
+        let resultError = $pg.pqresultErrorMessage(res)
+        if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbRemoveBlockedIp for IP ", ipAddress, ": ", e.msg
+    result = false
+
+proc dbRemoveExpiredBlockedIps*(): bool =
+  try:
+    ensureDbConnection()
+    let query = "DELETE FROM blocked_ips WHERE blocked_until <= now()"
+    # No parameters needed for this query
+    let res = pg.pqexecParams(dbConn, query.cstring, 0, nil, nil, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+        echo "[DB ERROR] dbRemoveExpiredBlockedIps failed: ", $pg.pqerrorMessage(dbConn)
+        let resultError = $pg.pqresultErrorMessage(res)
+        if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+    else:
+        # pqcmdTuples returns the number of rows affected for DELETE/UPDATE
+        let rowsAffected = $pg.pqcmdTuples(res)
+        echo "[DB DEBUG] dbRemoveExpiredBlockedIps removed ", rowsAffected, " rows."
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbRemoveExpiredBlockedIps: ", e.msg
     result = false

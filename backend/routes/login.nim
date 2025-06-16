@@ -5,6 +5,22 @@ import ../crypto/password
 import ../crypto/aes
 import ../utils/rate_limit
 import ../utils/audit_log
+import ../utils/totp_utils # Import for verifyTotp
+
+# Rate Limiting Configurations
+const loginAttemptConfig = RateLimitConfig(
+  routeIdentifier: "login_attempt",
+  maxAttemptsShortTerm: 5,
+  windowSecShortTerm: 60, # 5 attempts per minute
+  blockDurationSecLongTerm: 900 # 15 minutes DB block
+)
+
+const mfaVerifyConfig = RateLimitConfig(
+  routeIdentifier: "login_mfa_verify",
+  maxAttemptsShortTerm: 5,
+  windowSecShortTerm: 120, # 5 attempts per 2 minutes
+  blockDurationSecLongTerm: 1800 # 30 minutes DB block
+)
 
 # Import verifyCaptcha from register.nim - simplified for now
 proc verifyCaptcha(ip, captcha: string): bool =
@@ -67,8 +83,8 @@ proc getUserIdFromSession*(sessionToken: string): int =
 routes:
   post "/login":
     echo "[DEBUG] Login endpoint hit"
-    let ip = "127.0.0.1"  # Fallback IP for now
-    if not checkRateLimit(ip, "login"):
+    let ip = "127.0.0.1"  # Fallback IP for now - TODO: Replace with actual client IP
+    if not isRequestAllowed(ip, loginAttemptConfig):
       resp Http429, "Too many attempts. Please try later."
       return
 
@@ -125,8 +141,8 @@ routes:
       resp Http200, "Login successful."
 
   post "/login/mfa":
-    let ip = "127.0.0.1"
-    if not checkRateLimit(ip, "mfa"):
+    let ip = "127.0.0.1" # Fallback IP for now - TODO: Replace with actual client IP
+    if not isRequestAllowed(ip, mfaVerifyConfig):
       resp Http429, "Too many attempts. Please try later."
       return
 
@@ -154,16 +170,12 @@ routes:
         if encSecret.len > 0 and iv.len > 0:
           try:
             let secret = aesGcmDecrypt(key, encSecret, iv)
-            # Verify TOTP code (placeholder - should use proper TOTP verification)
-            if mfaCode.len == 6 and mfaCode.allCharsInSet({'0'..'9'}):
-              # For now, accept any 6-digit code when MFA secret exists
-              # In production, implement proper TOTP verification
-              discard # verification passed
-            else:
+            if not verifyTotp(secret, mfaCode): # Use verifyTotp from totp_utils
               resp Http400, "Invalid MFA code."
               return
-          except:
-            resp Http500, "MFA verification failed."
+          except Exception as e: # Catch specific exceptions if possible, or log e.msg
+            # Log the error: echo "MFA verification exception: ", e.msg
+            resp Http500, "MFA verification failed due to an internal error."
             return
         else:
           resp Http500, "MFA not properly configured."
