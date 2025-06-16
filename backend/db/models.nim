@@ -7,6 +7,7 @@ type
     passwordSalt*: string
     mfaEnabled*: bool
     mfaSecretEnc*: string # AES-GCM encrypted
+    mfaIv*: string          # IV for mfa_secret_enc
     recoveryCodesEnc*: string # AES-GCM encrypted
     lastLogin*: string
     failedLoginCount*: int
@@ -19,3 +20,8 @@ type
     sessionToken*: string
     createdAt*: string
     expiresAt*: string
+
+  BlockedIp* = object
+    ipAddress*: string
+    blockedUntil*: string # Store as string, convert to/from timestamp as needed
+    reason*: string

@@ -81,26 +81,58 @@ function loadSessions() {
     })
     .then(sessions => {
       const sessionList = document.getElementById('sessionList');
+      sessionList.innerHTML = ''; // Clear previous list
+
       if (sessions.length === 0) {
-        sessionList.innerHTML = '<li class="text-gray-600">No active sessions</li>';
+        const listItem = document.createElement('li');
+        listItem.className = 'text-gray-600';
+        listItem.textContent = 'No active sessions';
+        sessionList.appendChild(listItem);
         return;
       }
       
-      sessionList.innerHTML = sessions.map(session => {
-        const currentTag = session.current ? ' <span class="text-green-600 text-xs">(Current)</span>' : '';
-        const revokeButton = session.current ? 
-          '<span class="text-gray-400 text-xs">Use Logout</span>' :
-          `<button onclick="revokeSession('${session.id}')" class="text-red-600 hover:text-red-800 text-xs">Revoke</button>`;
-        
-        return `<li class="flex justify-between items-center py-1">
-          <span class="text-gray-800">${session.ip} - ${session.created}${currentTag}</span>
-          ${revokeButton}
-        </li>`;
-      }).join('');
+      sessions.forEach(session => {
+        const listItem = document.createElement('li');
+        listItem.className = 'flex justify-between items-center py-1';
+
+        const sessionInfoSpan = document.createElement('span');
+        sessionInfoSpan.className = 'text-gray-800';
+        // Ensure session.ip and session.created are treated as text.
+        // The backend should ideally sanitize these if they could ever contain HTML.
+        // For now, we assume they are plain text.
+        sessionInfoSpan.textContent = `${session.ip} - ${session.created}`;
+
+        if (session.current) {
+          const currentTagSpan = document.createElement('span');
+          currentTagSpan.className = 'text-green-600 text-xs ml-1'; // Added ml-1 for spacing
+          currentTagSpan.textContent = '(Current)';
+          sessionInfoSpan.appendChild(currentTagSpan);
+        }
+        listItem.appendChild(sessionInfoSpan);
+
+        if (session.current) {
+          const useLogoutSpan = document.createElement('span');
+          useLogoutSpan.className = 'text-gray-400 text-xs';
+          useLogoutSpan.textContent = 'Use Logout';
+          listItem.appendChild(useLogoutSpan);
+        } else {
+          const revokeButton = document.createElement('button');
+          revokeButton.className = 'text-red-600 hover:text-red-800 text-xs';
+          revokeButton.textContent = 'Revoke';
+          revokeButton.onclick = () => revokeSession(session.id); // session.id is used in a function call
+          listItem.appendChild(revokeButton);
+        }
+        sessionList.appendChild(listItem);
+      });
     })
     .catch(err => {
       console.error('Failed to load sessions:', err);
-      document.getElementById('sessionList').innerHTML = '<li class="text-red-600">Failed to load sessions</li>';
+      const sessionList = document.getElementById('sessionList');
+      sessionList.innerHTML = ''; // Clear previous list on error too
+      const listItem = document.createElement('li');
+      listItem.className = 'text-red-600';
+      listItem.textContent = 'Failed to load sessions';
+      sessionList.appendChild(listItem);
     });
 }
 
