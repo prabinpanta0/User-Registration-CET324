@@ -1,0 +1,46 @@
+.env
+.env.*
+.DS_Store
+node_modules/
+dist/
+build/
+*.log
+test*
+*temp
+*.compiled
+
+*.nim.c
+*.nim.cpp
+*.nim.js
+*.nim.o
+*.nim.so
+*.nim.d
+*.nim.bin
+# Nim cache
+.nimcache/
+# Nimble packages
+.nimble/
+# Nimble configuration
+.nimble.json
+# Nimble build artifacts
+.nimble.lock
+# Nimble test artifacts
+.nimble-test/
+# Nimble documentation
+.nimble-doc/
+# Nimble generated files
+.nimble-gen/
+# Nimble temporary files
+# Nimble logs
+.nimble.log
+# Nimble cache
+.nimble-cache/
+# Nimble dependencies
+.nimble-deps/
+
+
+# Lua build artifacts
+*.luac
+# Lua cache
+.luacache/
+
