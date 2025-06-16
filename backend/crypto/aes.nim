@@ -1,21 +1,22 @@
-import nimcrypto, base64, random, os
+import nimcrypto, base64, os
+import nimcrypto/sysrand
 
-proc randomBytes(len: int): seq[byte] =
-  result = newSeq[byte](len)
-  for i in 0..<len:
-    result[i] = byte(rand(256))
+proc randomBytes*(len: int): seq[byte] =
+  result = newSeq[byte](len) # Initialize the sequence first
+  discard sysrand.randomBytes(result) # Call with the openArray, discard int return
 
-proc getAesKey(): seq[byte] =
-  # Get AES key from environment, pad or truncate to 32 bytes for AES-256
-  let keyStr = getEnv("AES_KEY", "default_fallback_key_32_chars_12")
-  result = newSeq[byte](32)
+proc getAesKey*(): seq[byte] =
+  # Get AES key from environment, must be 32 bytes for AES-256
+  let keyStr = getEnv("AES_KEY")
+  if keyStr.len == 0:
+    raise newException(OSError, "AES_KEY environment variable not set")
   
-  # Convert string to bytes and pad/truncate to 32 bytes
-  for i in 0..<32:
-    if i < keyStr.len:
-      result[i] = byte(keyStr[i])
-    else:
-      result[i] = 0
+  if keyStr.len != 32:
+    raise newException(ValueError, "AES_KEY must be 32 bytes long")
+
+  result = newSeq[byte](keyStr.len)
+  for i in 0..<keyStr.len:
+    result[i] = byte(keyStr[i])
 
 proc aesEncrypt*(plaintext: string): (string, string) =
   # Generate random IV for CBC mode
@@ -89,10 +90,10 @@ proc aesDecrypt*(b64ciphertext, b64iv: string): string =
     result = ""
 
 # Convenience function that takes key as parameter (for backward compatibility)
-proc aesEncrypt*(key: string, plaintext: string): (string, string) =
+proc aesEncrypt*(key: string, plaintext: string): (string, string) {.deprecated: "AES key parameter is ignored; key is always sourced from AES_KEY env var. This function will be removed in a future version.".} =
   # Ignore the key parameter and use environment key instead
   result = aesEncrypt(plaintext)
 
-proc aesDecrypt*(key, b64ciphertext, b64iv: string): string =
+proc aesDecrypt*(key, b64ciphertext, b64iv: string): string {.deprecated: "AES key parameter is ignored; key is always sourced from AES_KEY env var. This function will be removed in a future version.".} =
   # Ignore the key parameter and use environment key instead
   result = aesDecrypt(b64ciphertext, b64iv)
