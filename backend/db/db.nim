@@ -165,7 +165,7 @@ proc dbGetUserRecoveryCodes*(userId: int): seq[string] =
 
     if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
       let codesJsonString = $pg.pqgetvalue(res, 0, 0)
-      if codesJsonString.len > 2 and not pg.pqgetisnull(res,0,0): # Not empty '[]' and not NULL
+      if codesJsonString.len > 2 and pg.pqgetisnull(res,0,0) == 0: # Not empty '[]' and not NULL
         try:
           let parsedJson = parseJson(codesJsonString)
           if parsedJson.kind == JArray:
