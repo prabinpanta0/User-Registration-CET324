@@ -47,25 +47,60 @@ routes:
     resp Http200, %*{"otpauth": otpauth, "secret": secret}
 
   post "/mfa/verify":
+    echo "[MFA VERIFY] Route called"
     let user = getCurrentUser(request)
     if user.id == 0:
+      echo "[MFA VERIFY] Not authenticated"
       resp Http401, "Not authenticated."
       return
 
     let ip = "127.0.0.1" # TODO: Get real IP address from request
     if not isRequestAllowed(ip, mfaInitialVerifyConfig):
+      echo "[MFA VERIFY] Rate limited"
       resp Http429, "Too many MFA verification attempts. Please try later."
       return
 
     let body = parseJson(request.body)
     let code = body["code"].getStr
+    echo "[MFA VERIFY] Code entered: '", code, "' length: ", code.len
+    
+    # Validate code format
+    if code.len != 6:
+      echo "[MFA VERIFY] ERROR: Invalid code length"
+      resp Http400, "Invalid code format. Must be 6 digits."
+      return
+    
+    # Check if code is all digits
+    for c in code:
+      if not c.isDigit:
+        echo "[MFA VERIFY] ERROR: Non-digit character in code"
+        resp Http400, "Invalid code format. Must be 6 digits."
+        return
     let (encSecret, iv) = dbGetUserMfaSecret(user.id)
+    echo "[MFA VERIFY] Raw encrypted secret length: ", encSecret.len, " IV length: ", iv.len
+    
+    if encSecret.len == 0 or iv.len == 0:
+      echo "[MFA VERIFY] ERROR: No MFA secret found for user"
+      resp Http500, "MFA not set up properly."
+      return
+    
     let key = getEnv("AES_KEY")
     let secret = aesGcmDecrypt(key, encSecret, iv)
+    echo "[MFA VERIFY] Secret decrypted, length: ", secret.len
+    
+    if secret.len == 0:
+      echo "[MFA VERIFY] ERROR: Failed to decrypt MFA secret"
+      resp Http500, "MFA decryption failed."
+      return
+    
     if not verifyTotp(secret, code, 30, 1): # Explicitly pass default period and window
+      echo "[MFA VERIFY] Code verification FAILED"
       resp Http400, "Invalid code."
       return
+    echo "[MFA VERIFY] Code verification SUCCESS"
     if not dbEnableUserMfa(user.id):
+      echo "[MFA VERIFY] Failed to enable MFA in database"
       resp Http500, "Failed to enable MFA."
       return
+    echo "[MFA VERIFY] MFA enabled successfully"
     resp Http200, "MFA enabled."

@@ -6,8 +6,10 @@ import jester
 import db/db
 import db/models
 import crypto/password
+import crypto/aes
 import utils/rate_limit
 import utils/audit_log
+import utils/totp_utils
 import times, strutils, json, random
 
 # Include captcha verification function
@@ -113,38 +115,83 @@ routes:
       setCookie("session", sessionToken, path = "/", httpOnly = true)
       resp Http200, "Login successful."
 
-  # MFA verification for login
+  # MFA verification for login - PROPER IMPLEMENTATION
   post "/login/mfa":
+    echo "[LOGIN MFA] Route called"
     let ip = "127.0.0.1"
     if not checkRateLimit(ip, "mfa"):
+      echo "[LOGIN MFA] Rate limited"
       resp Http429, "Too many attempts. Please try later."
       return
 
     let tempSession = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
     if tempSession.len == 0:
+      echo "[LOGIN MFA] No temp session found"
       resp Http401, "No pending MFA verification."
       return
 
     let session = dbGetSessionByToken(tempSession)
     if session.userId == 0:
+      echo "[LOGIN MFA] Invalid temp session"
       resp Http401, "Invalid session."
       return
 
     let body = parseJson(request.body)
     let mfaCode = body["mfa_code"].getStr
+    echo "[LOGIN MFA] Code entered: '", mfaCode, "' length: ", mfaCode.len
 
-    # Verify MFA code (simplified - accept any 6-digit code)
-    if mfaCode.len == 6 and mfaCode.allCharsInSet({'0'..'9'}):
-      # Clear temp session
-      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
-      discard dbDeleteSession(tempSession)
-      
-      # Create permanent session
-      let sessionToken = createSession(session.userId)
-      setCookie("session", sessionToken, path = "/", httpOnly = true)
-      resp Http200, "Login successful."
-    else:
+    # Validate code format
+    if mfaCode.len != 6:
+      echo "[LOGIN MFA] ERROR: Invalid code length"
+      resp Http400, "Invalid code format. Must be 6 digits."
+      return
+
+    # Check if code is all digits
+    for c in mfaCode:
+      if not c.isDigit:
+        echo "[LOGIN MFA] ERROR: Non-digit character in code"
+        resp Http400, "Invalid code format. Must be 6 digits."
+        return
+
+    # Get user and their MFA secret
+    let user = dbGetUserById(session.userId)
+    if user.id == 0 or not user.mfaEnabled:
+      echo "[LOGIN MFA] ERROR: User not found or MFA not enabled"
+      resp Http401, "MFA not enabled for this user."
+      return
+
+    let (encSecret, iv) = dbGetUserMfaSecret(session.userId)
+    echo "[LOGIN MFA] Raw encrypted secret length: ", encSecret.len, " IV length: ", iv.len
+    
+    if encSecret.len == 0 or iv.len == 0:
+      echo "[LOGIN MFA] ERROR: No MFA secret found for user"
+      resp Http500, "MFA not set up properly."
+      return
+    
+    let secret = aesDecrypt(encSecret, iv)
+    echo "[LOGIN MFA] Secret decrypted, length: ", secret.len
+    
+    if secret.len == 0:
+      echo "[LOGIN MFA] ERROR: Failed to decrypt MFA secret"
+      resp Http500, "MFA decryption failed."
+      return
+
+    # Use proper TOTP verification
+    if not verifyTotp(secret, mfaCode, 30, 1):
+      echo "[LOGIN MFA] Code verification FAILED"
       resp Http400, "Invalid MFA code."
+      return
+    echo "[LOGIN MFA] Code verification SUCCESS"
+
+    # Clear temp session
+    setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
+    discard dbDeleteSession(tempSession)
+    
+    # Create permanent session
+    let sessionToken = createSession(session.userId)
+    setCookie("session", sessionToken, path = "/", httpOnly = true)
+    echo "[LOGIN MFA] Login successful"
+    resp Http200, "Login successful."
 
   post "/logout":
     let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
@@ -219,58 +266,105 @@ routes:
 
   # MFA Setup route
   post "/mfa/setup":
+    echo "[MFA SETUP] Route called"
     let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
     if sessionToken.len == 0:
+      echo "[MFA SETUP] Not authenticated - no session"
       resp Http401, "Not authenticated."
       return
     
     let session = dbGetSessionByToken(sessionToken)
     if session.userId == 0:
+      echo "[MFA SETUP] Invalid session"
       resp Http401, "Invalid session."
       return
     
     let user = dbGetUserById(session.userId)
     if user.id == 0:
+      echo "[MFA SETUP] User not found"
       resp Http401, "User not found."
       return
     
-    # Generate TOTP secret (simplified)
-    let secret = "JBSWY3DPEHPK3PXP"  # In production, generate random base32 secret
+    # Generate proper random TOTP secret
+    let secret = generateTotpSecret()
+    echo "[MFA SETUP] Generated secret, length: ", secret.len
     
-    # Store the secret (simplified - should be AES encrypted)
-    if not dbSetUserMfaSecret(user.id, secret, ""):
+    # Encrypt and store the secret properly
+    let (encSecret, iv) = aesEncrypt(secret)
+    if not dbSetUserMfaSecret(user.id, encSecret, iv):
+      echo "[MFA SETUP] Failed to store encrypted secret"
       resp Http500, "Failed to store MFA secret."
       return
+    echo "[MFA SETUP] Secret stored successfully"
     
     # Generate otpauth URL
-    let otpauth = "otpauth://totp/YourApp:" & user.username & "?secret=" & secret & "&issuer=YourApp"
+    let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
+    echo "[MFA SETUP] Generated otpauth URL"
     
-    resp Http200, $(%*{"otpauth": otpauth, "secret": secret, "qr": "/static/qr_placeholder.png"}), "application/json"
+    # Return data for client-side QR generation
+    resp Http200, $(%*{"otpauth": otpauth, "secret": secret}), "application/json"
 
-  # MFA Verification route
+  # MFA Verification route - PROPER IMPLEMENTATION
   post "/mfa/verify":
+    echo "[MFA VERIFY] Route called"
     let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
     if sessionToken.len == 0:
+      echo "[MFA VERIFY] Not authenticated - no session"
       resp Http401, "Not authenticated."
       return
     
     let session = dbGetSessionByToken(sessionToken)
     if session.userId == 0:
+      echo "[MFA VERIFY] Invalid session"
       resp Http401, "Invalid session."
       return
     
     let body = parseJson(request.body)
     let code = body["code"].getStr
+    echo "[MFA VERIFY] Code entered: '", code, "' length: ", code.len
     
-    # Simplified MFA verification - accept any 6-digit code for now
-    if code.len == 6 and code.allCharsInSet({'0'..'9'}):
-      if not dbEnableUserMfa(session.userId):
-        resp Http500, "Failed to enable MFA."
+    # Validate code format
+    if code.len != 6:
+      echo "[MFA VERIFY] ERROR: Invalid code length"
+      resp Http400, "Invalid code format. Must be 6 digits."
+      return
+    
+    # Check if code is all digits
+    for c in code:
+      if not c.isDigit:
+        echo "[MFA VERIFY] ERROR: Non-digit character in code"
+        resp Http400, "Invalid code format. Must be 6 digits."
         return
-      resp Http200, "MFA enabled."
-    else:
+    
+    let (encSecret, iv) = dbGetUserMfaSecret(session.userId)
+    echo "[MFA VERIFY] Raw encrypted secret length: ", encSecret.len, " IV length: ", iv.len
+    
+    if encSecret.len == 0 or iv.len == 0:
+      echo "[MFA VERIFY] ERROR: No MFA secret found for user"
+      resp Http500, "MFA not set up properly."
+      return
+    
+    let secret = aesDecrypt(encSecret, iv)
+    echo "[MFA VERIFY] Secret decrypted, length: ", secret.len
+    
+    if secret.len == 0:
+      echo "[MFA VERIFY] ERROR: Failed to decrypt MFA secret"
+      resp Http500, "MFA decryption failed."
+      return
+    
+    # Use proper TOTP verification
+    if not verifyTotp(secret, code, 30, 1):
+      echo "[MFA VERIFY] Code verification FAILED"
       resp Http400, "Invalid code."
       return
+    echo "[MFA VERIFY] Code verification SUCCESS"
+    
+    if not dbEnableUserMfa(session.userId):
+      echo "[MFA VERIFY] Failed to enable MFA in database"
+      resp Http500, "Failed to enable MFA."
+      return
+    echo "[MFA VERIFY] MFA enabled successfully"
+    resp Http200, "MFA enabled."
 
   # Dashboard API routes
   get "/dashboard/info":

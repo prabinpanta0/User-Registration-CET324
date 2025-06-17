@@ -55,4 +55,38 @@ proc isRequestAllowed*(ip: string, config: RateLimitConfig): bool =
   rateLimitStore[key].add(now)
   echo "[RATE LIMIT] IP ", ip, " ALLOWED for ", config.routeIdentifier, ". Attempts: ", rateLimitStore[key].len, "/", config.maxAttemptsShortTerm
   return true # Request allowed
- 
+
+# Helper function to provide simple rate limiting interface
+proc checkRateLimit*(ip: string, routeType: string): bool =
+  let config = case routeType
+  of "login":
+    RateLimitConfig(
+      routeIdentifier: "login_attempt",
+      maxAttemptsShortTerm: 5,
+      windowSecShortTerm: 300,  # 5 minutes
+      blockDurationSecLongTerm: 3600  # 1 hour
+    )
+  of "register":
+    RateLimitConfig(
+      routeIdentifier: "register_attempt", 
+      maxAttemptsShortTerm: 3,
+      windowSecShortTerm: 300,  # 5 minutes
+      blockDurationSecLongTerm: 1800  # 30 minutes
+    )
+  of "mfa":
+    RateLimitConfig(
+      routeIdentifier: "mfa_verify",
+      maxAttemptsShortTerm: 3,
+      windowSecShortTerm: 300,  # 5 minutes  
+      blockDurationSecLongTerm: 1800  # 30 minutes
+    )
+  else:
+    # Default configuration
+    RateLimitConfig(
+      routeIdentifier: routeType,
+      maxAttemptsShortTerm: 5,
+      windowSecShortTerm: 300,
+      blockDurationSecLongTerm: 3600
+    )
+  
+  return isRequestAllowed(ip, config)

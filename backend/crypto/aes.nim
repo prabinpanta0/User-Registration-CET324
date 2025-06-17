@@ -1,4 +1,4 @@
-import nimcrypto, base64, os
+import nimcrypto, base64, os, strutils
 import nimcrypto/sysrand
 
 proc randomBytes*(len: int): seq[byte] =
@@ -11,12 +11,15 @@ proc getAesKey*(): seq[byte] =
   if keyStr.len == 0:
     raise newException(OSError, "AES_KEY environment variable not set")
   
-  if keyStr.len != 32:
-    raise newException(ValueError, "AES_KEY must be 32 bytes long")
-
-  result = newSeq[byte](keyStr.len)
-  for i in 0..<keyStr.len:
-    result[i] = byte(keyStr[i])
+  # Expect hex-encoded key (64 characters for 32 bytes)
+  if keyStr.len != 64:
+    raise newException(ValueError, "AES_KEY must be 64 hex characters (32 bytes), got " & $keyStr.len)
+  
+  # Convert hex string to bytes
+  result = newSeq[byte](32)
+  for i in 0..<32:
+    let hexPair = keyStr[i*2..i*2+1]
+    result[i] = byte(parseHexInt(hexPair))
 
 proc aesEncrypt*(plaintext: string): (string, string) =
   # Generate random IV for CBC mode

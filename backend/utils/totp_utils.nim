@@ -1,5 +1,5 @@
 import strutils, times, random, sequtils
-import nimcrypto/hmac, nimcrypto/sha1 # For hmac_sha1
+import nimcrypto/[hmac, sha]
 # import endians # Not directly used, but often good for byte manipulation if needed elsewhere
 # nimcrypto/utils might not be needed if padLeft from strutils is used.
 
@@ -58,30 +58,42 @@ proc hotp*(secret: seq[byte], counter: int, digits: int = 6): string =
   for i in 0..7:
     msg[7-i] = byte((counter shr (i*8)) and 0xff)
 
-  let hmac = hmac_sha1(secret, msg)
+  let hmacResult = hmac(sha1, secret, msg)
+  let hmacBytes = hmacResult.data
 
   # Dynamic truncation (RFC 4226)
-  let offset = hmac[^1] and 0x0f # Last nibble of HMAC
-  let code = ((hmac[offset].int and 0x7f) shl 24) or
-             ((hmac[offset+1].int and 0xff) shl 16) or
-             ((hmac[offset+2].int and 0xff) shl 8) or
-             (hmac[offset+3].int and 0xff)
+  let offset = hmacBytes[^1] and 0x0f # Last nibble of HMAC
+  let code = ((hmacBytes[offset].int and 0x7f) shl 24) or
+             ((hmacBytes[offset+1].int and 0xff) shl 16) or
+             ((hmacBytes[offset+2].int and 0xff) shl 8) or
+             (hmacBytes[offset+3].int and 0xff)
 
-  let otp = code mod (10^digits) # Resulting OTP
-  result = otp.intToStr.padLeft('0', digits)
+  # Calculate modulo using power of 10
+  var modulus = 1
+  for i in 0..<digits:
+    modulus *= 10
+  let otp = code mod modulus # Resulting OTP
+  result = $otp
+  # Pad with zeros if needed
+  while result.len < digits:
+    result = "0" & result
 
 proc totp*(secret: string, time: int64 = epochTime().int64, digits: int = 6, period: int = 30): string =
   # Ensure secret is uppercase and remove spaces for base32 decoding
   let key = base32Decode(secret.replace(" ", "").toUpperAscii())
   let counter = time div period
-  result = hotp(key, counter, digits)
+  result = hotp(key, counter.int, digits)
 
 proc verifyTotp*(secret: string, code: string, period: int = 30, window: int = 1): bool =
   # Accept codes for current, previous, and next time windows (window = 1 means -1, 0, +1 periods)
   let now = epochTime().int64
+  echo "[DEBUG] TOTP Verify - Input code: '", code, "' secret length: ", secret.len
   for offset in -window..window:
     let t = now + offset * period
-    let expectedCode = totp(secret, t, code.len, period) # Use code.len for digits
+    let expectedCode = totp(secret, t, 6, period) # Fixed to always use 6 digits
+    echo "[DEBUG] TOTP Verify - Expected code for offset ", offset, ": '", expectedCode, "'"
     if expectedCode == code:
+      echo "[DEBUG] TOTP Verify - MATCH found at offset ", offset
       return true
+  echo "[DEBUG] TOTP Verify - NO MATCH found"
   return false
