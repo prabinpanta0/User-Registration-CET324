@@ -10,65 +10,111 @@ import crypto/aes
 import utils/rate_limit
 import utils/audit_log
 import utils/totp_utils
-import times, strutils, json, random
+import times, strutils, json, random, options
+import nimcrypto/random as cryptoRandom # For cryptographically secure random bytes
 
-# Include captcha verification function
-proc verifyCaptcha(ip, captcha: string): bool =
-  result = true
+# Import route modules
+import routes/login
+import routes/register
+import routes/dashboard
+import routes/mfa
+import routes/email_verification_routes
+import utils/ddos_protector # Import DDoS Protector
 
-# Include validation functions
-proc validPassword(password: string): bool =
-  result = password.len >= 10
+# --- Helper Procedures ---
 
-proc validUsername(username: string): bool =
-  result = username.len in 3..20
-
-proc validEmail(email: string): bool =
-  result = email.contains("@") and email.contains(".") and email.len > 5
-
-# Session management functions
-proc createSession(userId: int, temporary: bool = false): string =
-  # Generate a random session token
-  randomize()
-  var token = ""
-  for i in 0..<32:
-    token.add char(rand(255))
-  
-  # Convert to hex string for safe storage
-  result = ""
-  for c in token:
-    result.add c.int.toHex(2).toLowerAscii()
-  
-  # Set expiration time
-  let expiresAt = if temporary:
-    # 10 minutes for MFA verification
-    $((epochTime().int64 + 600))
+proc generateSecureRandomToken(length: int = 32): string =
+  # Generate cryptographically secure random bytes and hex encode them
+  var bytes: seq[byte]
+  if length > 0:
+    bytes = newSeq[byte](length)
+    # Ensure randomBytes is called correctly for a seq.
+    # Nim's randomBytes typically takes an openArray. Casting or using addr.
+    if bytes.len > 0: # Check sequence is not empty before accessing addr bytes[0]
+      cryptoRandom.randomBytes(bytes[0].addr, length)
   else:
-    # 7 days for regular session
-    $((epochTime().int64 + 604800))
+    return "" # Or raise error for invalid length
   
-  echo "[DEBUG] Creating session for userId=", userId, " token=", result[0..10], "... expiresAt=", expiresAt
-  discard dbInsertSession(userId, result, expiresAt)
+  result = ""
+  for b in bytes:
+    result.add b.toHex(2).toLowerAscii()
 
-routes:
-  # Login routes
-  post "/login":
-    echo "[DEBUG] Login endpoint hit in main.nim"
-    let ip = "127.0.0.1"
-    if not checkRateLimit(ip, "login"):
-      resp Http429, "Too many attempts. Please try later."
-      return
+proc getClientIp(request: Request): string =
+  # Order of preference: X-Forwarded-For (if multiple, take first), X-Real-IP, remoteAddress
+  var ip = request.headers.getOrDefault("X-Forwarded-For", "")
+  if ip.len > 0:
+    let parts = ip.split(',')
+    if parts.len > 0:
+      let firstIp = parts[0].strip()
+      if firstIp.len > 0: return firstIp
+  
+  ip = request.headers.getOrDefault("X-Real-IP", "")
+  if ip.len > 0:
+    return ip
+  
+  return request.remoteAddress
 
-    let body = parseJson(request.body)
-    let userOrEmail = body["username"].getStr
-    let password = body["password"].getStr
-    let captcha = if body.hasKey("captcha"): body["captcha"].getStr else: ""
-    echo "[DEBUG] Login attempt - user: ", userOrEmail, " password length: ", password.len
+# --- Jester Routes ---
 
-    if not verifyCaptcha(ip, captcha):
-      resp Http400, "Invalid captcha."
-      return
-
+routes:   before hook(request):
+     let clientIp = getClientIp(request)
+     if clientIp.len == 0:
+       echo "[ERROR] Could not determine client IP."
+       resp Http500, "Internal Server Error: Cannot identify client."
+       finish()
+ 
+     # Check if IP is currently banned (from DB)
+     let blockedStatusOption = getBlockedStatus(clientIp)
+     if blockedStatusOption.isSome:
+       let blockedUntil = blockedStatusOption.get
+       if blockedUntil > now():
+         echo "[WARN] Blocked IP attempted access: ", clientIp, " - Blocked until: ", $blockedUntil
+         resp Http403, "Access denied. Your IP is currently blocked."
+         finish()
+ 
+     # Check for rate limiting (in-memory check, then potential ban via DB)
+     if isRateLimited(clientIp):
+       echo "[WARN] Rate limit exceeded by IP (hook): ", clientIp
+       resp Http429, "Too many requests. Your IP has been temporarily blocked."
+       finish()
+ 
+   # Include captcha verification function
+   proc verifyCaptcha(ip, captcha: string): bool =
+     result = true
+ 
+   # Include validation functions
+   proc validPassword(password: string): bool =
+     result = password.len >= 10
+ 
+   proc validUsername(username: string): bool =
+     result = username.len in 3..20
+ 
+   proc validEmail(email: string): bool =
+     result = email.contains("@") and email.contains(".") and email.len > 5
+ 
+   # Session management functions
+   proc createSession(userId: int, temporary: bool = false): string =
+     # Generate a random session token
+     randomize()
+     var token = ""
+     for i in 0..<32:
+       token.add char(rand(255))
+   
+     # Convert to hex string for safe storage
+     result = ""
+     for c in token:
+       result.add c.int.toHex(2).toLowerAscii()
+   
+     # Set expiration time
+     let expiresAt = if temporary:
+       # 10 minutes for MFA verification
+       $((epochTime().int64 + 600))
+     else:
+       # 7 days for regular session
+       $((epochTime().int64 + 604800))
+   
+     echo "[DEBUG] Creating session for userId=", userId, " token=", result[0..10], "... expiresAt=", expiresAt
+     discard dbInsertSession(userId, result, expiresAt)
     # Ensure database connection is active
     ensureDbConnection()
 
@@ -458,17 +504,35 @@ routes:
 
   # CSRF token route
   get "/csrf-token":
-    # Generate a simple CSRF token
-    randomize()
-    var token = ""
-    for i in 0..<32:
-      let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-      token.add chars[rand(chars.len - 1)]
-    resp Http200, token
+    let sessionTokenCookie = request.cookies.getOrDefault("session", "")
+    var userSession: Session
+    var isExistingSession = false
 
-  # Captcha route
+    if sessionTokenCookie.len > 0:
+      ensureDbConnection()
+      userSession = dbGetSessionByToken(sessionTokenCookie)
+      if userSession.id != 0:
+        isExistingSession = true
+
+    let newCsrfToken = generateSecureRandomToken()
+
+    if isExistingSession:
+      if dbUpdateSessionCsrfToken(userSession.sessionToken, newCsrfToken):
+        echo "[CSRF] Updated CSRF token in session for user ID: ", userSession.userId
+        resp Http200, newCsrfToken
+      else:
+        echo "[CSRF ERROR] Failed to update CSRF token in session database for user ID: ", userSession.userId
+        resp Http500, "Error generating CSRF token (session update failed)."
+    else:
+      var cookie = newCookie("csrf_token_value", newCsrfToken, expires = now() + 30.minutes)
+      cookie.path = "/"
+      # cookie.secure = true # Enable for HTTPS if your service is HTTPS-only
+      cookie.sameSite = SameSite.Strict
+      setCookie(cookie)
+      echo "[CSRF] Issued CSRF token via double submit cookie method."
+      resp Http200, newCsrfToken
+
   get "/captcha":
-    # Generate a simple SVG captcha
     let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     var text = ""
     randomize()
@@ -482,20 +546,27 @@ routes:
   <line x1="30" y1="50" x2="130" y2="10" stroke="#adb5bd" stroke-width="1"/>
   <line x1="20" y1="10" x2="140" y2="30" stroke="#adb5bd" stroke-width="1"/>
 </svg>"""
-    
     resp Http200, svg, "image/svg+xml"
+
+# --- Main Execution ---
 
 when isMainModule:
   echo "[MAIN] Starting application..."
-  loadEnvFile()
+  loadEnvFile() # Load .env first
   echo "[DEBUG] Environment loaded"
   
   let dbUrl = getEnv("DB_URL")
   echo "[DEBUG] DB_URL: ", if dbUrl.len > 0: "SET (length=" & $dbUrl.len & ")" else: "NOT SET"
-  echo "[DEBUG] Full DB_URL: ", dbUrl
+  # echo "[DEBUG] Full DB_URL: ", dbUrl # Potentially sensitive, comment out for prod logs
+
+  let portEnv = getEnv("PORT", "5000")
+  var portNum = 5000
+  try:
+    portNum = parseInt(portEnv)
+  except ValueError:
+    echo "[WARN] Invalid PORT value '", portEnv, "', defaulting to 5000."
   
-  let port = getEnv("PORT", "5000").parseInt
-  echo "[INFO] Starting server on port ", port
+  echo "[INFO] Starting server on port ", portNum
   
   # Initialize database connection
   echo "[MAIN] Calling connectDb()..."
@@ -506,6 +577,9 @@ when isMainModule:
     echo "[MAIN ERROR] Database connection failed: ", e.msg
     quit(1)
 
-  # Start server
-  echo "[MAIN] Starting server..."
+  # Initialize DDoS Protector
+  initDdosProtector()
+
+  # Start Jester server
+  echo "[MAIN] Starting Jester server..."
   runForever()

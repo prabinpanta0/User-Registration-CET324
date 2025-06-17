@@ -10,7 +10,6 @@
   <div class="container mx-auto p-4">
     <div class="max-w-md mx-auto mt-16 bg-white p-10 rounded shadow"> <!-- mt-10 to mt-16, p-8 to p-10 -->
   <h2 class="text-3xl font-bold mb-6 text-center">Register</h2> <!-- text-2xl to text-3xl -->
-  <div id="registerError" class="p-3 rounded-md border border-red-300 bg-red-50 text-red-700 mb-6 hidden"></div> <!-- Added styles, mb-4 to mb-6 -->
   
   <form id="registerForm" method="POST" action="/register" autocomplete="off">
     <div class="mb-6"> <!-- mb-4 to mb-6 -->
@@ -103,17 +102,29 @@ registerForm.addEventListener('submit', function(e) {
       window.location = '/mfa/setup';
     } else {
       const msg = await r.text();
-      const errDiv = document.getElementById('registerError');
-      errDiv.textContent = msg;
-      errDiv.classList.remove('hidden');
+      Toastify({
+        text: msg,
+        duration: 3000,
+        close: true,
+        gravity: "top",
+        position: "right",
+        backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+        stopOnFocus: true,
+      }).showToast();
       refreshCaptcha();
     }
   }).catch(err => {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Register';
-    const errDiv = document.getElementById('registerError');
-    errDiv.textContent = 'Network error. Please try again.';
-    errDiv.classList.remove('hidden');
+    Toastify({
+      text: 'Network error. Please try again.',
+      duration: 3000,
+      close: true,
+      gravity: "top",
+      position: "right",
+      backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+      stopOnFocus: true,
+    }).showToast();
   });
 });
 </script>

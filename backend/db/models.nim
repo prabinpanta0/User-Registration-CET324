@@ -13,6 +13,9 @@ type
     failedLoginCount*: int
     lockoutUntil*: string
     lastFailedLogin*: string
+    passwordHistory*: seq[string]
+    passwordLastChanged*: string
+    isVerified*: bool
 
   Session* = object
     id*: int
@@ -20,6 +23,7 @@ type
     sessionToken*: string
     createdAt*: string
     expiresAt*: string
+    csrfToken*: string
 
   BlockedIp* = object
     ipAddress*: string

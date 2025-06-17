@@ -1,7 +1,8 @@
 import jester, json, strutils
 import ../db/db
 import ../crypto/aes
-import ../utils/csrf
+# import ../utils/csrf # Removed this, assuming it's replaced by csrf_validator
+import ../utils/csrf_validator # Added new CSRF validator
 import ../crypto/password
 import nimcrypto, times, sequtils, random # nimcrypto for hmac_sha1, times for epochTime, random for rand in generateTotpSecret (now in utils)
 import ../routes/login
@@ -30,6 +31,11 @@ routes:
       resp Http401, "Not authenticated."
       return
 
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
     let ip = "127.0.0.1" # TODO: Get real IP address from request
     if not isRequestAllowed(ip, mfaSetupConfig):
       resp Http429, "Too many MFA setup attempts. Please try later."
@@ -52,6 +58,11 @@ routes:
     if user.id == 0:
       echo "[MFA VERIFY] Not authenticated"
       resp Http401, "Not authenticated."
+      return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
       return
 
     let ip = "127.0.0.1" # TODO: Get real IP address from request

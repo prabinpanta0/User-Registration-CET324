@@ -6,6 +6,7 @@ import ../crypto/aes
 import ../utils/rate_limit
 import ../utils/audit_log
 import ../utils/totp_utils # Import for verifyTotp
+import ../utils/csrf_validator # Import CSRF validator
 
 # Rate Limiting Configurations
 const loginAttemptConfig = RateLimitConfig(
@@ -88,6 +89,19 @@ routes:
       resp Http429, "Too many attempts. Please try later."
       return
 
+    # CSRF Check (pre-session)
+    if not verifyCsrf(request, isPreSession = true):
+      resp Http403, "CSRF token validation failed."
+      return
+    # Important: Clear the csrf_token_value cookie after successful use
+    # This needs access to the `response` object, which is tricky from a separate util
+    # without passing `response` around. The route handler should do this.
+    var csrfCookieToClear = newCookie("csrf_token_value", "", expires = past())
+    csrfCookieToClear.path = "/"
+    # csrfCookieToClear.secure = true # if set with Secure
+    csrfCookieToClear.sameSite = SameSite.Strict
+    setCookie(csrfCookieToClear) # Jester's setCookie on the implicit response object
+
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
     let password = body["password"].getStr
@@ -127,24 +141,73 @@ routes:
       resp Http401, "Invalid credentials."
       return
     discard resetFailedLogin(user.id)
+    # NB: dbUpdateUserLastLogin is now called *after* isVerified check.
+
+    # Check if user is verified
+    if not user.isVerified:
+      resp Http401, "Account not verified. Please check your email."
+      return
+
+    discard dbUpdateUserLastLogin(user.id) # Update last login timestamp only for verified, successful login
+
+    # Check password expiry
+    var passwordExpired = false
+    if user.passwordLastChanged.len > 0:
+      try:
+        # Assuming passwordLastChanged is in ISO 8601 format from DB (YYYY-MM-DDTHH:MM:SSZ)
+        let lastChangedTime = parse(user.passwordLastChanged, "yyyy-MM-dd'T'HH:mm:ss'Z'", utc())
+        let sixMonths = initDuration(days = 30 * 6) # Approximate 6 months
+        if now() - lastChangedTime > sixMonths:
+          passwordExpired = true
+      except ValueError:
+        # Log error or handle as appropriate
+        echo "[WARN] Could not parse passwordLastChanged for user ", user.id, ": ", user.passwordLastChanged
+
+    var responseJson = %*{"status": "Login successful."}
+    if passwordExpired:
+      responseJson["password_expired"] = newJBool(true)
 
     # Check if MFA is required
     if userHasMfa(user.id):
       # Store temporary session for MFA verification
-      let tempSession = createSession(user.id, temporary = true)
-      setCookie("temp_session", tempSession, path = "/", httpOnly = true, maxAge = 600) # 10 minutes
-      resp Http200, "mfa_required"
+      let tempSessionToken = createSession(user.id, temporary = true)
+      var tempCookie = newCookie("temp_session", tempSessionToken, expires = now() + 10.minutes)
+      tempCookie.path = "/"
+      tempCookie.httpOnly = true
+      # tempCookie.secure = true # Add if HTTPS is enforced
+      tempCookie.sameSite = SameSite.Strict
+      setCookie(tempCookie)
+      responseJson["status"] = newJString("mfa_required") # Update status for MFA
+      resp Http200, $responseJson
     else:
       # Generate session token and set it as a cookie
-      let sessionToken = createSession(user.id)
-      setCookie("session", sessionToken, path = "/", httpOnly = true)
-      resp Http200, "Login successful."
+      let sessionTokenValue = createSession(user.id)
+      var sessionCookie = newCookie("session", sessionTokenValue, expires = now() + 7.days) # Example: 7 days expiry
+      sessionCookie.path = "/"
+      sessionCookie.httpOnly = true
+      # sessionCookie.secure = true # Add if HTTPS is enforced
+      sessionCookie.sameSite = SameSite.Strict
+      setCookie(sessionCookie)
+      resp Http200, $responseJson
 
   post "/login/mfa":
     let ip = "127.0.0.1" # Fallback IP for now - TODO: Replace with actual client IP
     if not isRequestAllowed(ip, mfaVerifyConfig):
       resp Http429, "Too many attempts. Please try later."
       return
+
+    # CSRF Check for MFA submission (this is part of an authenticated flow, using main session CSRF)
+    # However, the main session isn't fully established yet.
+    # The CSRF token for this step should have been handled by the form that led here.
+    # If `/csrf-token` was called before showing MFA form, and that token was put into session for `temp_session`,
+    # then we could verify against `temp_session.csrfToken`.
+    # For simplicity, if we assume the CSRF check on initial login covers the whole flow,
+    # or that MFA page itself needs its own CSRF token from `/csrf-token` endpoint (which would then use the temp_session).
+    # Let's assume for now the initial login CSRF check is deemed sufficient for the immediate MFA step,
+    # or that a CSRF token for the MFA form itself is not implemented in this step.
+    # A robust implementation might require a CSRF token to be passed and validated specifically for this MFA submission.
+    # This subtask does not explicitly state CSRF for MFA form, focusing on login/register + authenticated routes.
+    # So, skipping CSRF check here FOR NOW, but noting it as a potential gap.
 
     let tempSession = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
     if tempSession.len == 0:
@@ -162,7 +225,16 @@ routes:
     # TODO: Implement actual MFA verification using the stored secret
     let userId = getUserIdFromSession(tempSession)
     if userId > 0:
-      let user = dbGetUserById(userId)
+      let user = dbGetUserById(userId) # User object fetched here for MFA
+
+      # Check if user is verified (again, as this is a separate auth step)
+      if not user.isVerified:
+        # Clear temp session as it's no longer valid for an unverified user trying to complete MFA
+        setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
+        discard dbDeleteSession(tempSession)
+        resp Http401, "Account not verified. Cannot complete MFA."
+        return
+
       if user.id > 0 and user.mfaEnabled:
         # Get and decrypt the MFA secret
         let key = getEnv("AES_KEY")
@@ -182,13 +254,33 @@ routes:
           return
       
       # Clear temp session
-      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
-      discard dbDeleteSession(tempSession)
+      var tempCookieToClear = newCookie("temp_session", "", expires = past())
+      tempCookieToClear.path = "/"
+      setCookie(tempCookieToClear)
+      discard dbDeleteSession(tempSession) # tempSession is the token string
       
       # Create permanent session
-      let sessionToken = createSession(userId)
-      setCookie("session", sessionToken, path = "/", httpOnly = true)
-      resp Http200, "Login successful."
+      let permanentSessionToken = createSession(userId)
+      var permanentCookie = newCookie("session", permanentSessionToken, expires = now() + 7.days)
+      permanentCookie.path = "/"
+      permanentCookie.httpOnly = true
+      # permanentCookie.secure = true # Add if HTTPS is enforced
+      permanentCookie.sameSite = SameSite.Strict
+      setCookie(permanentCookie)
+
+      # Check password expiry again for the main session
+      var responseJson = %*{"status": "Login successful."}
+      # user object is from the MFA context, already fetched via dbGetUserById(userId)
+      if user.passwordLastChanged.len > 0:
+        try:
+          let lastChangedTime = parse(user.passwordLastChanged, "yyyy-MM-dd'T'HH:mm:ss'Z'", utc())
+          let sixMonths = initDuration(days = 30 * 6) # Approximate
+          if now() - lastChangedTime > sixMonths:
+            responseJson["password_expired"] = newJBool(true)
+        except ValueError:
+          echo "[WARN] Could not parse passwordLastChanged for user ", user.id, " during MFA: ", user.passwordLastChanged
+
+      resp Http200, $responseJson
     else:
       resp Http401, "Invalid session."
 
@@ -198,10 +290,14 @@ routes:
     
     if sessionToken.len > 0:
       discard dbDeleteSession(sessionToken)
-      setCookie("session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
+      var sessionCookieToClear = newCookie("session", "", expires = past())
+      sessionCookieToClear.path = "/"
+      setCookie(sessionCookieToClear)
     
     if tempSession.len > 0:
       discard dbDeleteSession(tempSession)
-      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
+      var tempCookieToClear = newCookie("temp_session", "", expires = past())
+      tempCookieToClear.path = "/"
+      setCookie(tempCookieToClear)
     
     resp Http200, "Logged out."
