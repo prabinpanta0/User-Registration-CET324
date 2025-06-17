@@ -13,7 +13,8 @@ CREATE TABLE users (
     lockout_until VARCHAR(32) DEFAULT '',
     last_failed_login VARCHAR(32) DEFAULT '',
     password_history JSONB DEFAULT '[]'::jsonb,
-    password_last_changed TIMESTAMPTZ DEFAULT NOW()
+    password_last_changed TIMESTAMPTZ DEFAULT NOW(),
+    is_verified BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE sessions (
@@ -21,7 +22,8 @@ CREATE TABLE sessions (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     session_token VARCHAR(128) NOT NULL UNIQUE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMP NOT NULL
+    expires_at TIMESTAMP NOT NULL,
+    csrf_token TEXT DEFAULT '' -- Store CSRF token associated with the session
 );
 
 CREATE TABLE blocked_ips (

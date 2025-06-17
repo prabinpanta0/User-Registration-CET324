@@ -122,9 +122,9 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
 proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
   # Ensure database connection is active
   ensureDbConnection()
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE username = $1 OR email = $2"
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed, is_verified FROM users WHERE username = $1 OR email = $2"
   let params: array[2, cstring] = [userOrEmail.cstring, userOrEmail.cstring]
-  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
+  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed, is_verified FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
 
   let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
   
@@ -132,7 +132,7 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
     let status = pg.pqresultStatus(res)
     # Indices: id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5),
     #          mfa_secret_enc(6), mfa_iv(7), recovery_codes_enc(8), last_login(9),
-    #          password_history(10), password_last_changed(11)
+    #          password_history(10), password_last_changed(11), is_verified(12)
     echo "[DB DEBUG] Query status: ", status
     if status != pg.PGRES_TUPLES_OK:
       echo "[DB DEBUG] Query failed with status: ", status
@@ -165,7 +165,8 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
         recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
         lastLogin: $pg.pqgetvalue(res, 0, 9),
         passwordHistory: history,
-        passwordLastChanged: $pg.pqgetvalue(res, 0, 11)
+        passwordLastChanged: $pg.pqgetvalue(res, 0, 11),
+        isVerified: $pg.pqgetvalue(res, 0, 12) == "t"
       )
     else:
       result = User()  # Return empty user if no results
@@ -175,7 +176,7 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
 proc dbGetUserById*(userId: int): User =
   # Ensure database connection is active
   ensureDbConnection()
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE id = $1"
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed, is_verified FROM users WHERE id = $1"
   let userIdStr = $userId
   let params: array[1, cstring] = [userIdStr.cstring]
 
@@ -198,6 +199,7 @@ proc dbGetUserById*(userId: int): User =
         except JsonParsingError:
           echo "[DB ERROR] Failed to parse password_history JSON: ", historyJson
 
+      # Indices: id(0)...password_last_changed(11), is_verified(12)
       result = User(
         id: parseInt($pg.pqgetvalue(res, 0, 0)),
         username: $pg.pqgetvalue(res, 0, 1),
@@ -210,24 +212,26 @@ proc dbGetUserById*(userId: int): User =
         recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
         lastLogin: $pg.pqgetvalue(res, 0, 9),
         passwordHistory: history,
-        passwordLastChanged: $pg.pqgetvalue(res, 0, 11)
+        passwordLastChanged: $pg.pqgetvalue(res, 0, 11),
+        isVerified: $pg.pqgetvalue(res, 0, 12) == "t"
       )
     else:
       result = User()  # Return empty user if no results
   finally:
     pg.pqclear(res)
 
-proc dbInsertSession*(userId: int, token: string, expiresAt: string): bool =
+proc dbInsertSession*(userId: int, token: string, expiresAt: string, csrfToken: string = ""): bool =
   try:
     ensureDbConnection()
-    let query = "INSERT INTO sessions (user_id, session_token, created_at, expires_at) VALUES ($1, $2, now(), to_timestamp($3))"
+    # Initialize csrf_token to empty string if not provided, or use provided value
+    let query = "INSERT INTO sessions (user_id, session_token, created_at, expires_at, csrf_token) VALUES ($1, $2, now(), to_timestamp($3), $4)"
     let userIdStr = $userId
-    let params: array[3, cstring] = [userIdStr.cstring, token.cstring, expiresAt.cstring]
+    let params: array[4, cstring] = [userIdStr.cstring, token.cstring, expiresAt.cstring, csrfToken.cstring]
 
-    echo "[DB DEBUG] Inserting session: userId=", userId, " token=", token[0..10], "... expiresAt=", expiresAt
-    echo "[DB DEBUG] Session insert query: INSERT INTO sessions (user_id, session_token, created_at, expires_at) VALUES ($1, $2, now(), to_timestamp($3))"
+    echo "[DB DEBUG] Inserting session: userId=", userId, " token=", token[0..10], "... expiresAt=", expiresAt, " csrf_token=", csrfToken
+    echo "[DB DEBUG] Session insert query: INSERT INTO sessions (user_id, session_token, created_at, expires_at, csrf_token) VALUES ($1, $2, now(), to_timestamp($3), $4)"
 
-    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
     defer: pg.pqclear(res)
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     echo "[DB DEBUG] Session insert result: ", result
@@ -237,9 +241,9 @@ proc dbInsertSession*(userId: int, token: string, expiresAt: string): bool =
 
 proc dbGetSessionByToken*(token: string): Session =
   ensureDbConnection()
-  let query = "SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = $1 AND expires_at > now()"
+  let query = "SELECT id, user_id, session_token, created_at, expires_at, csrf_token FROM sessions WHERE session_token = $1 AND expires_at > now()"
   let params: array[1, cstring] = [token.cstring]
-  echo "[DB DEBUG] Session lookup query: SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = $1 AND expires_at > now() with param: ", token[0..min(token.len-1, 9)], "..."
+  echo "[DB DEBUG] Session lookup query: SELECT id, user_id, session_token, created_at, expires_at, csrf_token FROM sessions WHERE session_token = $1 AND expires_at > now() with param: ", token[0..min(token.len-1, 9)], "..."
 
   let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
   
@@ -258,9 +262,10 @@ proc dbGetSessionByToken*(token: string): Session =
         userId: parseInt($pg.pqgetvalue(res, 0, 1)),
         sessionToken: $pg.pqgetvalue(res, 0, 2),
         createdAt: $pg.pqgetvalue(res, 0, 3),
-        expiresAt: $pg.pqgetvalue(res, 0, 4)
+        expiresAt: $pg.pqgetvalue(res, 0, 4),
+        csrfToken: $pg.pqgetvalue(res, 0, 5)
       )
-      echo "[DB DEBUG] Session found: userId=", result.userId, " token=", result.sessionToken[0..10], "..."
+      echo "[DB DEBUG] Session found: userId=", result.userId, " token=", result.sessionToken[0..10], "..., csrf_token=", result.csrfToken
     else:
       echo "[DB DEBUG] No valid session found"
       result = Session()
@@ -389,6 +394,21 @@ proc dbUpdateUserPassword*(userId: int, newHash, newSalt: string): bool =
     echo "[DB ERROR] Exception in dbUpdateUserPassword for user ID ", userId, ": ", e.msg
     result = false
 
+proc dbSetUserVerified*(userId: int): bool =
+  try:
+    ensureDbConnection()
+    let query = "UPDATE users SET is_verified = TRUE WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbSetUserVerified failed for user ID ", userId, ": ", $pg.pqerrorMessage(dbConn)
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbSetUserVerified for user ID ", userId, ": ", e.msg
+    result = false
+
 proc incrementFailedLogin*(userId: int): bool =
   try:
     ensureDbConnection()
@@ -503,13 +523,91 @@ proc createSession*(userId: int): string =
   # Convert to hex string for safe storage
   result = ""
   for c in token:
-    result.add toHex(ord(c), 2)
+    result.add toHex(ord(c), 2) # .toLowerAscii() is often good for consistency
   
-  # Set expiration to 24 hours from now
-  let expiresAt = $(epochTime().int64 + 86400)
+  # Set expiration to e.g. 7 days from now
+  let expiresAt = $(epochTime().int64 + 604800) # 7 days
   
-  # Store in database
-  discard dbInsertSession(userId, result, expiresAt)
+  # Store in database, csrfToken is initially empty or null by schema default
+  discard dbInsertSession(userId, result, expiresAt, "") # Pass empty csrfToken initially
+
+# This proc seems to be defined in ddos_protector.nim's db.nim section now.
+# proc dbBlockIp*(ipAddress: string, reason: string, durationMinutes: int): Future[bool]
+# Let's ensure there's no duplication or add it here if this is the main db.nim.
+# Based on the plan, it should be here.
+
+proc dbBlockIp*(ipAddress: string, reason: string, durationMinutes: int): Future[bool] {.async.} =
+  try:
+    ensureDbConnection()
+    let blockedUntilTime = now() + initDuration(minutes = durationMinutes)
+    # PostgreSQL's to_timestamp expects epoch seconds as double.
+    let blockedUntilEpochStr = $(blockedUntilTime.toUnixFloat())
+
+    let query = "INSERT INTO blocked_ips (ip_address, blocked_until, reason) VALUES ($1, to_timestamp($2::double precision), $3) ON CONFLICT (ip_address) DO UPDATE SET blocked_until = EXCLUDED.blocked_until, reason = EXCLUDED.reason"
+    let params: array[3, cstring] = [ipAddress.cstring, blockedUntilEpochStr.cstring, reason.cstring]
+
+    echo "[DB DEBUG] Blocking IP: ", ipAddress, " until epoch: ", blockedUntilEpochStr, " for reason: ", reason
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbBlockIp failed: ", $pg.pqerrorMessage(dbConn)
+      let resultError = $pg.pqresultErrorMessage(res)
+      if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+    else:
+      echo "[DB INFO] IP ", ipAddress, " blocked successfully until ", $blockedUntilTime
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbBlockIp: ", e.msg
+    result = false
+  return result # Explicitly return the future
+
+proc getBlockedStatus*(ipAddress: string): Future[Option[Time]] {.async.} =
+  try:
+    ensureDbConnection()
+    let query = "SELECT blocked_until FROM blocked_ips WHERE ip_address = $1"
+    let params: array[1, cstring] = [ipAddress.cstring]
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
+      let blockedUntilStr = $pg.pqgetvalue(res, 0, 0)
+      # Assuming blocked_until is stored in a format parseable by times.parse
+      # E.g., 'YYYY-MM-DD HH:MM:SS' or ISO8601 with timezone.
+      # If it's epoch, it needs conversion. PostgreSQL to_timestamp stores TIMESTAMPTZ.
+      # Let's try parsing standard timestamp format.
+      try:
+        let blockedUntilTime = parse(blockedUntilStr, "yyyy-MM-dd HH:mm:sszzz", utc()) # Example format, adjust to actual DB output
+        if blockedUntilTime > now():
+          return some(blockedUntilTime)
+        else: # Expired ban
+          return none(Time)
+      except ValueError:
+        echo "[DB ERROR] Failed to parse blocked_until timestamp '", blockedUntilStr, "' for IP ", ipAddress
+        return none(Time)
+    else: # Not found or query error
+      if pg.pqresultStatus(res) != pg.PGRES_TUPLES_OK:
+         echo "[DB ERROR] getBlockedStatus query failed for IP ", ipAddress, ": ", $pg.pqerrorMessage(dbConn)
+      return none(Time)
+  except Exception as e:
+    echo "[DB ERROR] Exception in getBlockedStatus for IP ", ipAddress, ": ", e.msg
+    return none(Time)
+  # Nim's async proc implicitly returns a Future wrapping the return type.
+
+proc dbUpdateSessionCsrfToken*(sessionToken: string, newCsrfToken: string): bool =
+  try:
+    ensureDbConnection()
+    let query = "UPDATE sessions SET csrf_token = $1 WHERE session_token = $2"
+    let params: array[2, cstring] = [newCsrfToken.cstring, sessionToken.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbUpdateSessionCsrfToken failed: ", $pg.pqerrorMessage(dbConn)
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbUpdateSessionCsrfToken: ", e.msg
+    result = false
 
 proc dbUpdateUserLastLogin*(userId: int): bool =
   try:
@@ -596,36 +694,11 @@ proc dbAddBlockedIp*(ipAddress: string, blockedUntilEpoch: string, reason: strin
     echo "[DB DEBUG] dbAddBlockedIp result: ", result
 
   except Exception as e:
-    echo "[DB ERROR] Exception in dbAddBlockedIp: ", e.msg
+    echo "[DB ERROR] Exception in dbAddBlockedIp: ", e.msg # This dbAddBlockedIp seems to be from a previous version/task.
     result = false
 
-proc dbGetBlockedIp*(ipAddress: string): BlockedIp =
-  try:
-    ensureDbConnection()
-    # Select only if not expired
-    let query = "SELECT ip_address, extract(epoch from blocked_until)::text, reason FROM blocked_ips WHERE ip_address = $1 AND blocked_until > now()"
-    let params: array[1, cstring] = [ipAddress.cstring]
-
-    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
-    defer: pg.pqclear(res)
-
-    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
-      result = BlockedIp(
-        ipAddress: $pg.pqgetvalue(res, 0, 0),
-        blockedUntil: $pg.pqgetvalue(res, 0, 1), # This is now an epoch string
-        reason: $pg.pqgetvalue(res, 0, 2)
-      )
-    else:
-      # Check for errors other than no rows
-      if pg.pqresultStatus(res) != pg.PGRES_TUPLES_OK and pg.pqcmdTuples(res) == "0": # No rows is fine
-          echo "[DB ERROR] dbGetBlockedIp query failed: ", $pg.pqerrorMessage(dbConn)
-          let resultError = $pg.pqresultErrorMessage(res)
-          if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
-      result = BlockedIp(ipAddress: "") # Return empty/default if not found or error
-
-  except Exception as e:
-    echo "[DB ERROR] Exception in dbGetBlockedIp: ", e.msg
-    result = BlockedIp(ipAddress: "")
+# proc dbGetBlockedIp*(ipAddress: string): BlockedIp = # This was the old version
+#  This is replaced by getBlockedStatus which returns Option[Time]
 
 proc dbRemoveBlockedIp*(ipAddress: string): bool =
   try:
