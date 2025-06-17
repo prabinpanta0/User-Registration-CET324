@@ -10,8 +10,6 @@
   <div class="container mx-auto p-4">
     <div class="max-w-md mx-auto mt-16 bg-white p-10 rounded shadow"> <!-- mt-10 to mt-16, p-8 to p-10 -->
       <h2 class="text-3xl font-bold mb-6 text-center">Login</h2> <!-- text-2xl to text-3xl -->
-      <div id="successMessage" class="p-3 rounded-md border border-green-300 bg-green-50 text-green-700 mb-6 hidden"></div> <!-- Added styles, mb-4 to mb-6 -->
-      <div id="loginError" class="p-3 rounded-md border border-red-300 bg-red-50 text-red-700 mb-6 hidden"></div> <!-- Added styles, mb-4 to mb-6 -->
       
       <!-- Regular Login Form -->
       <form id="loginForm" method="POST" action="/login" autocomplete="off">
@@ -93,9 +91,15 @@ fetch('/csrf-token').then(r => r.text()).then(token => {
 // Check for registration success message
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('registered') === 'true') {
-  const successDiv = document.getElementById('successMessage');
-  successDiv.textContent = 'Registration successful! Please log in with your credentials.';
-  successDiv.classList.remove('hidden');
+  Toastify({
+    text: 'Registration successful! Please log in with your credentials.',
+    duration: 3000,
+    close: true,
+    gravity: "top", // `top` or `bottom`
+    position: "right", // `left`, `center` or `right`
+    backgroundColor: "linear-gradient(to right, #00b09b, #96c93d)",
+    stopOnFocus: true, // Prevents dismissing of toast on hover
+  }).showToast();
   // Remove the parameter from URL
   window.history.replaceState({}, document.title, window.location.pathname);
 }
@@ -130,17 +134,29 @@ loginForm.addEventListener('submit', function(e) {
       }
     } else {
       const msg = await r.text();
-      const errDiv = document.getElementById('loginError');
-      errDiv.textContent = msg;
-      errDiv.classList.remove('hidden');
+      Toastify({
+        text: msg,
+        duration: 3000,
+        close: true,
+        gravity: "top",
+        position: "right",
+        backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+        stopOnFocus: true,
+      }).showToast();
       refreshCaptcha();
     }
   }).catch(err => {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Login';
-    const errDiv = document.getElementById('loginError');
-    errDiv.textContent = 'Network error. Please try again.';
-    errDiv.classList.remove('hidden');
+    Toastify({
+      text: 'Network error. Please try again.',
+      duration: 3000,
+      close: true,
+      gravity: "top",
+      position: "right",
+      backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+      stopOnFocus: true,
+    }).showToast();
   });
 });
 
@@ -162,9 +178,15 @@ mfaForm.addEventListener('submit', function(e) {
       window.location = '/dashboard';
     } else {
       const msg = await r.text();
-      const errDiv = document.getElementById('loginError');
-      errDiv.textContent = msg;
-      errDiv.classList.remove('hidden');
+      Toastify({
+        text: msg,
+        duration: 3000,
+        close: true,
+        gravity: "top",
+        position: "right",
+        backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+        stopOnFocus: true,
+      }).showToast();
     }
   });
 });

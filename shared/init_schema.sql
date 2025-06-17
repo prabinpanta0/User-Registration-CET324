@@ -11,7 +11,9 @@ CREATE TABLE users (
     last_login VARCHAR(32),      -- ISO timestamp or similar
     failed_login_count INTEGER NOT NULL DEFAULT 0,
     lockout_until VARCHAR(32) DEFAULT '',
-    last_failed_login VARCHAR(32) DEFAULT ''
+    last_failed_login VARCHAR(32) DEFAULT '',
+    password_history JSONB DEFAULT '[]'::jsonb,
+    password_last_changed TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE sessions (

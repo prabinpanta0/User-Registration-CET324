@@ -127,18 +127,37 @@ routes:
       resp Http401, "Invalid credentials."
       return
     discard resetFailedLogin(user.id)
+    discard dbUpdateUserLastLogin(user.id) # Update last login timestamp
+
+    # Check password expiry
+    var passwordExpired = false
+    if user.passwordLastChanged.len > 0:
+      try:
+        # Assuming passwordLastChanged is in ISO 8601 format from DB (YYYY-MM-DDTHH:MM:SSZ)
+        let lastChangedTime = parse(user.passwordLastChanged, "yyyy-MM-dd'T'HH:mm:ss'Z'", utc())
+        let sixMonths = initDuration(days = 30 * 6) # Approximate 6 months
+        if now() - lastChangedTime > sixMonths:
+          passwordExpired = true
+      except ValueError:
+        # Log error or handle as appropriate
+        echo "[WARN] Could not parse passwordLastChanged for user ", user.id, ": ", user.passwordLastChanged
+
+    var responseJson = %*{"status": "Login successful."}
+    if passwordExpired:
+      responseJson["password_expired"] = newJBool(true)
 
     # Check if MFA is required
     if userHasMfa(user.id):
       # Store temporary session for MFA verification
       let tempSession = createSession(user.id, temporary = true)
       setCookie("temp_session", tempSession, path = "/", httpOnly = true, maxAge = 600) # 10 minutes
-      resp Http200, "mfa_required"
+      responseJson["status"] = newJString("mfa_required") # Update status for MFA
+      resp Http200, $responseJson
     else:
       # Generate session token and set it as a cookie
       let sessionToken = createSession(user.id)
       setCookie("session", sessionToken, path = "/", httpOnly = true)
-      resp Http200, "Login successful."
+      resp Http200, $responseJson
 
   post "/login/mfa":
     let ip = "127.0.0.1" # Fallback IP for now - TODO: Replace with actual client IP
@@ -188,7 +207,20 @@ routes:
       # Create permanent session
       let sessionToken = createSession(userId)
       setCookie("session", sessionToken, path = "/", httpOnly = true)
-      resp Http200, "Login successful."
+
+      # Check password expiry again for the main session
+      var responseJson = %*{"status": "Login successful."}
+      # user object is from the MFA context, already fetched via dbGetUserById(userId)
+      if user.passwordLastChanged.len > 0:
+        try:
+          let lastChangedTime = parse(user.passwordLastChanged, "yyyy-MM-dd'T'HH:mm:ss'Z'", utc())
+          let sixMonths = initDuration(days = 30 * 6) # Approximate
+          if now() - lastChangedTime > sixMonths:
+            responseJson["password_expired"] = newJBool(true)
+        except ValueError:
+          echo "[WARN] Could not parse passwordLastChanged for user ", user.id, " during MFA: ", user.passwordLastChanged
+
+      resp Http200, $responseJson
     else:
       resp Http401, "Invalid session."
 

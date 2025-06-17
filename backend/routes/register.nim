@@ -2,6 +2,7 @@ import jester, strutils, json, sequtils
 import ../crypto/password
 import ../db/db
 import ../utils/rate_limit
+import ../utils/hibp # Added HIBP import
 import ../routes/login
 
 # Rate Limiting Configuration for Registration
@@ -60,6 +61,11 @@ routes:
       return
     if not verifyCaptcha(ip, captcha):
       resp Http400, "Invalid captcha."
+      return
+
+    # Check if password is pwned
+    if await isPasswordPwned(password):
+      resp Http400, "This password has been exposed in data breaches. Please choose a different password."
       return
 
     let salt = generateSalt()
