@@ -3,6 +3,7 @@ import ../db/db
 import ../routes/login
 import ../crypto/password # Added crypto import
 import ../utils/hibp # Added HIBP import
+import ../utils/csrf_validator # Import CSRF validator
 import ../routes/register import validPassword # Import specific proc
 
 # Helper to check password expiry
@@ -39,6 +40,12 @@ routes:
     if user.id == 0:
       resp Http401, "Not authenticated."
       return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
     let body = parseJson(request.body)
     let current = body["current_password"].getStr
     let newpw = body["new_password"].getStr
@@ -80,6 +87,29 @@ routes:
     if user.id == 0:
       resp Http401, "Not authenticated."
       return
+
+    # CSRF Check (session-bound)
+    # Note: /sessions/list is a POST currently but might be better as GET if it's just fetching data.
+    # If it remains POST and modifies/logs something sensitive, CSRF is good.
+    # For now, applying CSRF as it's a POST.
+    if not verifyCsrf(request): # Assuming /sessions/list might have side-effects or is sensitive
+      resp Http403, "CSRF token validation failed."
+      return
+
+    let sessions = listSessionsForUser(user.id)
+    resp Http200, %*sessions
+
+  post "/sessions/terminate":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
     let body = parseJson(request.body)
     let sessionId = body["session_id"].getInt
     if not deleteSessionById(sessionId):
