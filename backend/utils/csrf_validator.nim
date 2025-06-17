@@ -1,4 +1,4 @@
-import jester, strutils, options
+import jester, strutils, options, times
 import ../db/db # For dbGetSessionByToken
 import ../db/models # For Session model
 
@@ -63,16 +63,15 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
       echo "[CSRF FAIL] Session CSRF token mismatch for user ID: ", userSession.userId, ". Submitted: '", submittedToken, "', Session stores: '", userSession.csrfToken, "'"
       return false
 
-# Helper to be called by routes after successful pre-session CSRF verification
-proc clearCsrfDoubleSubmitCookie*(response: Response) =
-  # To "delete" a cookie, set its expiry to a past date.
-  # Jester's setCookie will handle creating the correct Set-Cookie header.
-  var cookieToClear = newCookie("csrf_token_value", "", expires = past()) # `past()` from `times`
-  cookieToClear.path = "/"
-  # Ensure other attributes match how it was set if necessary (Secure, SameSite)
-  # cookieToClear.secure = true # If it was set with Secure
-  cookieToClear.sameSite = SameSite.Strict
-  setCookie(response, cookieToClear) # This requires `response` object from Jester route
+# Helper to be called by routes after successful pre-session CSRF verification  
+proc getClearCsrfCookie*(): tuple[name: string, value: string, expires: string, path: string] =
+  # Returns cookie parameters that can be used by the route to clear the CSRF cookie
+  result = (
+    name: "csrf_token_value", 
+    value: "", 
+    expires: $(now() - 1.days), 
+    path: "/"
+  )
   echo "[CSRF] Cleared csrf_token_value cookie."
 
 # Note: Direct usage of `setCookie(response, ...)` from this util might be tricky
