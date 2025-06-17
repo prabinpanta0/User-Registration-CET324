@@ -92,9 +92,9 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
     
     echo "[DB DEBUG] Attempting to insert user: ", username, " email: ", email
 
-    let query = "INSERT INTO users (username, email, password_hash, password_salt) VALUES ($1, $2, $3, $4)"
+    let query = "INSERT INTO users (username, email, password_hash, password_salt, password_history, password_last_changed) VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW())"
     let params: array[4, cstring] = [username.cstring, email.cstring, hash.cstring, salt.cstring]
-    echo "[DB DEBUG] Query: INSERT INTO users (username, email, password_hash, password_salt) VALUES ($1, $2, $3, $4) with params: ", username, ", ", email, ", HASH, SALT"
+    echo "[DB DEBUG] Query: INSERT INTO users (username, email, password_hash, password_salt, password_history, password_last_changed) VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW()) with params: ", username, ", ", email, ", HASH, SALT"
     
     # Execute query with detailed error reporting
     let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
@@ -122,18 +122,17 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
 proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
   # Ensure database connection is active
   ensureDbConnection()
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE username = $1 OR email = $2"
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE username = $1 OR email = $2"
   let params: array[2, cstring] = [userOrEmail.cstring, userOrEmail.cstring]
-  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
+  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
 
   let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
-    # Note: The original query was selecting mfa_secret_enc at index 6, and recovery_codes_enc at 7, last_login at 8.
-    # With mfa_iv added, these indices shift.
-    # Original: id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5), mfa_secret_enc(6), recovery_codes_enc(7), last_login(8)
-    # New:      id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5), mfa_secret_enc(6), mfa_iv(7), recovery_codes_enc(8), last_login(9)
+    # Indices: id(0), username(1), email(2), password_hash(3), password_salt(4), mfa_enabled(5),
+    #          mfa_secret_enc(6), mfa_iv(7), recovery_codes_enc(8), last_login(9),
+    #          password_history(10), password_last_changed(11)
     echo "[DB DEBUG] Query status: ", status
     if status != pg.PGRES_TUPLES_OK:
       echo "[DB DEBUG] Query failed with status: ", status
@@ -142,7 +141,18 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
     let nrows = pg.pqntuples(res)
     echo "[DB DEBUG] Number of rows returned: ", nrows
     if nrows > 0:
-      # Get the first row
+      var history: seq[string]
+      let historyJson = $pg.pqgetvalue(res, 0, 10)
+      if historyJson.len > 2: # Not empty '[]'
+        try:
+          # Assuming JSON strings are directly in the array, e.g., ["hash1", "hash2"]
+          # This requires parsing the JSON array string. Nim's std/json can parse this.
+          let parsedHistory = parseJson(historyJson)
+          for item in parsedHistory:
+            history.add(item.getStr())
+        except JsonParsingError:
+          echo "[DB ERROR] Failed to parse password_history JSON: ", historyJson
+
       result = User(
         id: parseInt($pg.pqgetvalue(res, 0, 0)),
         username: $pg.pqgetvalue(res, 0, 1),
@@ -151,9 +161,11 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
         passwordSalt: $pg.pqgetvalue(res, 0, 4),
         mfaEnabled: $pg.pqgetvalue(res, 0, 5) == "t",
         mfaSecretEnc: $pg.pqgetvalue(res, 0, 6),
-        mfaIv: $pg.pqgetvalue(res, 0, 7), # Added mfaIv
+        mfaIv: $pg.pqgetvalue(res, 0, 7),
         recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
-        lastLogin: $pg.pqgetvalue(res, 0, 9)
+        lastLogin: $pg.pqgetvalue(res, 0, 9),
+        passwordHistory: history,
+        passwordLastChanged: $pg.pqgetvalue(res, 0, 11)
       )
     else:
       result = User()  # Return empty user if no results
@@ -163,7 +175,7 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
 proc dbGetUserById*(userId: int): User =
   # Ensure database connection is active
   ensureDbConnection()
-  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login FROM users WHERE id = $1"
+  let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed FROM users WHERE id = $1"
   let userIdStr = $userId
   let params: array[1, cstring] = [userIdStr.cstring]
 
@@ -176,8 +188,16 @@ proc dbGetUserById*(userId: int): User =
     
     let nrows = pg.pqntuples(res)
     if nrows > 0:
-      # Get the first row
-      # Indices updated to match the new SELECT query including mfa_iv
+      var history: seq[string]
+      let historyJson = $pg.pqgetvalue(res, 0, 10)
+      if historyJson.len > 2: # Not empty '[]'
+        try:
+          let parsedHistory = parseJson(historyJson)
+          for item in parsedHistory:
+            history.add(item.getStr())
+        except JsonParsingError:
+          echo "[DB ERROR] Failed to parse password_history JSON: ", historyJson
+
       result = User(
         id: parseInt($pg.pqgetvalue(res, 0, 0)),
         username: $pg.pqgetvalue(res, 0, 1),
@@ -186,9 +206,11 @@ proc dbGetUserById*(userId: int): User =
         passwordSalt: $pg.pqgetvalue(res, 0, 4),
         mfaEnabled: $pg.pqgetvalue(res, 0, 5) == "t",
         mfaSecretEnc: $pg.pqgetvalue(res, 0, 6),
-        mfaIv: $pg.pqgetvalue(res, 0, 7), # Added mfaIv
+        mfaIv: $pg.pqgetvalue(res, 0, 7),
         recoveryCodesEnc: $pg.pqgetvalue(res, 0, 8),
-        lastLogin: $pg.pqgetvalue(res, 0, 9)
+        lastLogin: $pg.pqgetvalue(res, 0, 9),
+        passwordHistory: history,
+        passwordLastChanged: $pg.pqgetvalue(res, 0, 11)
       )
     else:
       result = User()  # Return empty user if no results
@@ -303,17 +325,68 @@ proc dbEnableUserMfa*(userId: int): bool =
     echo "[DB ERROR] dbEnableUserMfa failed: ", e.msg
     result = false
 
-proc dbUpdateUserPassword*(userId: int, hash, salt: string): bool =
+import json # Add json import for parsing history
+
+proc dbUpdateUserPassword*(userId: int, newHash, newSalt: string): bool =
+  # This function now returns bool for success/failure, error messages should be handled by caller
   try:
     ensureDbConnection()
-    let query = "UPDATE users SET password_hash = $1, password_salt = $2 WHERE id = $3"
+
+    # 1. Get current user details including password_hash and password_history
+    let currentUser = dbGetUserById(userId)
+    if currentUser.id == 0:
+      echo "[DB ERROR] dbUpdateUserPassword: User not found with ID ", userId
+      return false
+
+    var history = currentUser.passwordHistory
+    let currentHashedPassword = currentUser.passwordHash
+
+    # 2. Check if newHash is in the current history (before adding the old one)
+    # This is a simplified check. A more robust check would be against the hashes *after* adding the current one.
+    # However, the requirement is "new password's hash ... must NOT be present in this updated password_history"
+    # Let's first construct the "updated password_history" then check.
+
+    # 3. Add current (soon to be old) password_hash to history
+    if currentHashedPassword.len > 0 : # Ensure we don't add an empty hash if it's a new user somehow
+        history.insert(currentHashedPassword, 0) # Add to the beginning
+
+    # 4. Limit history to 5 entries
+    while history.len > 5:
+      discard history.pop() # Remove the last (oldest)
+
+    # 5. Check if newHash is in the *updated* history
+    for oldHash in history:
+      if oldHash == newHash:
+        echo "[DB WARN] dbUpdateUserPassword: New password matches one of the last 5 passwords for user ID ", userId
+        # This specific error should be communicated back to the route to inform the user.
+        # For now, this function just returns false. The route will need to check a specific error type or message if we were to throw.
+        return false
+
+    # 6. Convert history sequence to JSON string for DB
+    var historyJsonArray = newJArray()
+    for h in history:
+      historyJsonArray.add(newJString(h))
+    let historyJsonString = $historyJsonArray
+
+    # 7. Update user with new hash, new salt, new history, and new password_last_changed
+    let query = "UPDATE users SET password_hash = $1, password_salt = $2, password_history = $3::jsonb, password_last_changed = NOW() WHERE id = $4"
     let userIdStr = $userId
-    let params: array[3, cstring] = [hash.cstring, salt.cstring, userIdStr.cstring]
-    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    let params: array[4, cstring] = [newHash.cstring, newSalt.cstring, historyJsonString.cstring, userIdStr.cstring]
+
+    echo "[DB DEBUG] Updating password for user ", userId, " with history: ", historyJsonString
+    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
     defer: pg.pqclear(res)
+
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+        echo "[DB ERROR] dbUpdateUserPassword DB update failed: ", $pg.pqerrorMessage(dbConn)
+        let resultError = $pg.pqresultErrorMessage(res)
+        if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+    else:
+        echo "[DB DEBUG] dbUpdateUserPassword successful for user ID ", userId
+
   except Exception as e:
-    echo "[DB ERROR] dbUpdateUserPassword failed: ", e.msg
+    echo "[DB ERROR] Exception in dbUpdateUserPassword for user ID ", userId, ": ", e.msg
     result = false
 
 proc incrementFailedLogin*(userId: int): bool =

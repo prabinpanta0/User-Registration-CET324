@@ -13,6 +13,8 @@ type
     failedLoginCount*: int
     lockoutUntil*: string
     lastFailedLogin*: string
+    passwordHistory*: seq[string]
+    passwordLastChanged*: string
 
   Session* = object
     id*: int
