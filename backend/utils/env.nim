@@ -25,3 +25,8 @@ proc getJwtSecret*(): string =
     # raise newException(ValueError, "JWT_SECRET environment variable is not set.")
     result = "a_s3cr3t_d3v3l0pm3nt_k3y_th4t_sh0uld_b3_ch4ng3d" # Fallback for dev if not set
     echo "[WARN] Using a default development JWT_SECRET. THIS IS INSECURE FOR PRODUCTION."
+
+proc getHCaptchaSecretKey*(): string =
+  result = getEnv("HCAPTCHA_SECRET_KEY", "")
+  if result.len == 0:
+    echo "[WARN] HCAPTCHA_SECRET_KEY is not set in environment. Captcha verification will fail."

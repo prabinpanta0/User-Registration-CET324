@@ -1,6 +1,8 @@
-import jester, strutils, json, sequtils, times
+import jester, strutils, json, sequtils, times, asyncdispatch, httpclient, options
 import ../crypto/password
 import ../db/db
+import ../utils/env # For getHCaptchaSecretKey
+import ../config # For HCaptchaSiteverifyURL
 import ../utils/rate_limit
 import ../utils/hibp # Added HIBP import
 import ../utils/email_sender # Added Email Sender
@@ -28,9 +30,52 @@ proc validUsername(username: string): bool =
 proc validEmail(email: string): bool =
   result = email.contains("@") and email.contains(".") and email.len > 5
 
-proc verifyCaptcha(ip, captcha: string): bool =
-  # Simplified captcha verification for now
-  result = true
+proc verifyCaptcha*(clientResponseToken: string, clientIpAddress: string = ""): Future[bool] {.async.} =
+  let secretKey = getHCaptchaSecretKey()
+  if secretKey.len == 0:
+    echo "[ERROR] hCaptcha secret key is not configured. Captcha verification skipped and failed."
+    return false
+
+  var content = newMultipartData()
+  content.add("secret", secretKey)
+  content.add("response", clientResponseToken)
+
+  # Add remoteip if provided and not empty.
+  # Ensure clientIpAddress is the actual user IP, considering X-Forwarded-For if behind a proxy.
+  if clientIpAddress.len > 0:
+    content.add("remoteip", clientIpAddress)
+
+  echo "[DEBUG] Verifying hCaptcha token: ", clientResponseToken, " for IP: ", clientIpAddress
+
+  try:
+    let client = newAsyncHttpClient()
+    # The httpclient.post consumes the MultipartData, so no need to manage its lifecycle explicitly here.
+    let response = await client.post(HCaptchaSiteverifyURL, multipart = content)
+
+    if response.code != Http200:
+      echo "[ERROR] hCaptcha request failed with status: ", response.code, " Body: ", await response.body
+      return false
+
+    let responseBody = await response.body
+    echo "[DEBUG] hCaptcha response body: ", responseBody
+    let jsonResponse = parseJson(responseBody)
+
+    if jsonResponse.hasKey("success") and jsonResponse["success"].getBool(false):
+      echo "[INFO] hCaptcha verification successful."
+      return true
+    else:
+      let errorCodes = if jsonResponse.hasKey("error-codes"): jsonResponse["error-codes"].getStr() else: "N/A"
+      echo "[INFO] hCaptcha verification failed. Error codes: ", errorCodes
+      return false
+
+  except Exception as e:
+    echo "[ERROR] Exception during hCaptcha verification: ", e.msg
+    return false
+  finally:
+    # newAsyncHttpClient doesn't strictly need close() for simple POSTs like this,
+    # but if it were used for multiple requests or more complex scenarios, proper closing would be important.
+    # For this single request, it's generally fine.
+    discard
 
 routes:
   post "/register":
@@ -55,7 +100,10 @@ routes:
     let email = body["email"].getStr
     let password = body["password"].getStr
     let confirm = body["confirm_password"].getStr
-    let captcha = body["captcha"].getStr
+    # Ensure the frontend sends the hCaptcha token as "h-captcha-response" or "captcha"
+    let captchaToken = if body.hasKey("h-captcha-response"): body["h-captcha-response"].getStr
+                       elif body.hasKey("captcha"): body["captcha"].getStr
+                       else: ""
     let honeypot = if body.hasKey("website"): body["website"].getStr else: ""
 
     if honeypot.len > 0:
@@ -73,8 +121,13 @@ routes:
     if not validEmail(email):
       resp Http400, "Invalid email."
       return
-    if not verifyCaptcha(ip, captcha):
-      resp Http400, "Invalid captcha."
+
+    # Perform CAPTCHA verification
+    # For clientIp, it's better to extract it reliably, e.g. from X-Forwarded-For if behind proxy.
+    # For now, passing the ip variable which is "127.0.0.1" as a placeholder or empty.
+    # let clientIpForCaptcha = request.headers.getOrDefault("X-Forwarded-For", ip) # Example
+    if not await verifyCaptcha(captchaToken, ip): # Using the placeholder 'ip' for now
+      resp Http400, "Invalid CAPTCHA. Please try again."
       return
 
     # Check if password is pwned
@@ -82,11 +135,14 @@ routes:
       resp Http400, "This password has been exposed in data breaches. Please choose a different password."
       return
 
-    let salt = generateSalt()
-    let hash = hashPassword(password, salt)
+    # Argon2id handles salt internally; hashPassword now only takes the password.
+    # The returned hash includes the salt.
+    let hash = hashPassword(password)
     
     echo "[DEBUG] Attempting to insert user: ", username, " with email: ", email
-    let insertResult = dbInsertUser(username, email, hash, salt)
+    # Pass an empty string for salt, as it's now part of the hash.
+    # The db schema & dbInsertUser signature will be updated in a later step.
+    let insertResult = dbInsertUser(username, email, hash, "")
     echo "[DEBUG] Insert result: ", insertResult
     
     if not insertResult:

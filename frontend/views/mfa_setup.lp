@@ -31,71 +31,28 @@
       <button type="submit" class="w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200">Verify & Enable MFA</button> <!-- py-2 to py-3 -->
     </form>
   </div>
+
+  <!-- Recovery Codes Section (Initially Hidden) -->
+  <div id="recoveryCodesSection" class="hidden mt-8">
+    <h3 class="text-2xl font-bold mb-4 text-center text-green-600">MFA Enabled Successfully!</h3>
+    <p class="text-gray-700 mb-4 text-center">Below are your recovery codes. Each code can be used once if you lose access to your authenticator app. <strong class="font-semibold">Save these codes in a very safe place. You will not be shown them again.</strong></p>
+
+    <div class="mb-4 p-4 border border-gray-300 rounded bg-gray-50 max-h-48 overflow-y-auto">
+        <ul id="recoveryCodeList" class="space-y-2">
+            <!-- Codes will be populated here by JavaScript -->
+        </ul>
+    </div>
+
+    <div class="flex flex-col sm:flex-row gap-3 mb-6">
+        <button id="copyRecoveryCodesBtn" class="w-full sm:w-auto flex-1 bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition duration-200">Copy Codes</button>
+        <button id="downloadRecoveryCodesBtn" class="w-full sm:w-auto flex-1 bg-gray-600 text-white py-2 px-4 rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200">Download Codes</button>
+    </div>
+    
+    <button id="proceedToDashboardBtn" class="w-full bg-green-600 text-white py-3 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-200">Done, Proceed to Dashboard</button>
+  </div>
 </div>
 <script src="/static/qrcode.min.js"></script>
-<script>
-// Fetch MFA setup data and CSRF token
-fetch('/mfa/setup', {method: 'POST', credentials: 'include'}).then(r => r.json()).then(data => {
-  document.getElementById('mfaSecret').value = data.secret;
-  // Check if QRCode library loaded successfully
-  if (typeof QRCode !== 'undefined') {
-    new QRCode(document.getElementById('qrContainer'), {
-      text: data.otpauth,
-      width: 256,  // Increased QR code size
-      height: 256 // Increased QR code size
-    });
-  } else {
-    // Fallback: show manual entry
-    document.getElementById('qrContainer').innerHTML = '<p class="text-blue-600">QR code library not loaded. Please enter the secret manually in your authenticator app.</p>';
-  }
-}).catch(err => {
-  console.error('Failed to load MFA setup data:', err);
-  document.getElementById('qrContainer').innerHTML = '<p class="text-red-500">Failed to load MFA setup. Please refresh and try again.</p>';
-});
-
-fetch('/csrf-token').then(r => r.text()).then(token => {
-  document.getElementById('csrfTokenInput').value = token;
-}).catch(err => {
-  console.warn('Could not fetch CSRF token:', err);
-});
-
-// Handle MFA verification form submission
-document.getElementById('verifyMfaForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  const formData = new FormData(this);
-  const data = {};
-  formData.forEach((v, k) => data[k] = v);
-  
-  const submitBtn = this.querySelector('button[type="submit"]');
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Verifying...';
-  
-  fetch('/mfa/verify', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    credentials: 'include',
-    body: JSON.stringify(data)
-  }).then(async r => {
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Verify & Enable MFA';
-    
-    if (r.ok) {
-      // MFA setup successful, redirect to dashboard
-      window.location = '/dashboard';
-    } else {
-      const msg = await r.text();
-      alert('Error: ' + msg);
-      // Clear the code input on error
-      this.querySelector('input[name="code"]').value = '';
-    }
-  }).catch(err => {
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Verify & Enable MFA';
-    alert('Network error. Please try again.');
-    console.error('MFA verification error:', err);
-  });
-});
-</script>
+<script src="/static/js/mfa_setup_page.js" defer></script>
   </div>
 </body>
 </html>
