@@ -11,7 +11,7 @@ import utils/rate_limit
 import utils/audit_log
 import utils/totp_utils
 import times, strutils, json, random, options
-import nimcrypto/random as cryptoRandom # For cryptographically secure random bytes
+import nimcrypto/sysrand as cryptoRandom # For cryptographically secure random bytes
 
 # Import route modules
 import routes/login

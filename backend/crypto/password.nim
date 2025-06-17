@@ -1,7 +1,7 @@
 # Ensure 'argon2' library is added to project dependencies
 # For example, using Nimble: nimble install argon2
 import argon2 # Assuming a common Nim library named 'argon2'
-import os, strutils
+import os, strutils, random
 # Imports for legacy functions
 import nimcrypto, base64
 import nimcrypto/sysrand # Required for legacy generateSalt_legacy
@@ -38,25 +38,54 @@ proc getArgon2Parallelism(): int =
   getEnvVarAsInt("ARGON2_PARALLELISM", DefaultArgon2Parallelism)
 
 proc hashPassword*(password: string): string =
-  # Using a hypothetical 'argon2' library API.
+  # Using the argon2 library with proper API
   let m_cost = getArgon2MemoryCost() # Memory cost in KiB
   let t_cost = getArgon2Iterations() # Number of iterations
   let p_lanes = getArgon2Parallelism() # Degree of parallelism
   try:
-    # This is a placeholder, actual library usage may differ.
-    # e.g. result = argon2.hash_encoded(password, argon2.Variant.Argon2id, m_cost, t_cost, p_lanes)
-    result = argon2.hash(password, m_cost, t_cost, p_lanes)
+    # Generate a random salt for each password
+    var saltBytes: array[16, byte]
+    for i in 0..<16:
+      saltBytes[i] = byte(rand(256))
+    let salt = base64.encode(saltBytes)
+    
+    # Use the full argon2 function: argon2(type, pwd, salt, iterations, memory, threads, hashlen)
+    let hashResult = argon2("id", password, salt, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
+    result = hashResult.enc # Return the encoded hash string
     echo "[DEBUG] Argon2 hash generated: ", result
   except Exception as e:
     echo "[ERROR] Error hashing password with Argon2: ", e.msg
     raise
 
 proc verifyPassword*(password: string, encodedHash: string): bool =
-  # Argon2 verification functions typically take the plaintext password and the full encoded hash string.
+  # For argon2 verification, we need to extract salt and parameters from the encoded hash
+  # and re-hash the password to compare
   try:
-    # This is a placeholder, actual library usage may differ.
-    # e.g. result = argon2.verify(encodedHash, password)
-    result = argon2.verify(encodedHash, password)
+    # The encoded hash contains all parameters needed for verification
+    # We can use a simpler approach: extract the salt from the encoded hash
+    # Format: $argon2id$v=19$m=4096,t=1,p=1$base64salt$base64hash
+    
+    let parts = encodedHash.split('$')
+    if parts.len < 5:
+      echo "[ERROR] Invalid encoded hash format"
+      return false
+      
+    let paramsPart = parts[3] # m=4096,t=1,p=1
+    let saltPart = parts[4]   # base64salt
+    
+    # Parse parameters
+    var m_cost, t_cost, p_lanes: uint32
+    for param in paramsPart.split(','):
+      let keyVal = param.split('=')
+      if keyVal.len == 2:
+        case keyVal[0]:
+        of "m": m_cost = keyVal[1].parseUint.uint32
+        of "t": t_cost = keyVal[1].parseUint.uint32  
+        of "p": p_lanes = keyVal[1].parseUint.uint32
+    
+    # Re-hash with same parameters
+    let hashResult = argon2("id", password, saltPart, t_cost, m_cost, p_lanes, 32'u32)
+    result = hashResult.enc == encodedHash
     echo "[DEBUG] Argon2 verify result for hash '", encodedHash, "': ", result
   except Exception as e:
     echo "[ERROR] Error verifying password with Argon2: ", e.msg

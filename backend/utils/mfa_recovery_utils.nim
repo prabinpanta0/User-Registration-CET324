@@ -1,6 +1,6 @@
 import strutils, random, sets
-import nimcrypto/sha256
-import nimcrypto/base64 # For encoding the hash
+import nimcrypto/sha2
+import base64 # For encoding the hash
 
 const
   RecoveryCodeLength = 10

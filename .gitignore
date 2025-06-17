@@ -36,7 +36,20 @@ build/
 .nimble-cache/
 # Nimble dependencies
 .nimble-deps/
+# Nim build artifacts
+*.nimble.o
+*.nimble.so
+# Nim build cache
+.nimble-build/
+# Nim documentation
+.nimble-docs/
+# Nim test files
+*.nimble-test.*
 
+# nim build files without extension
+*.nimble-build
+
+*.compiled
 
 # Lua build artifacts
 *.luac

@@ -663,7 +663,7 @@ proc getBlockedStatus*(ipAddress: string): Future[Option[Time]] {.async.} =
       try:
         let blockedUntilTime = parse(blockedUntilStr, "yyyy-MM-dd HH:mm:sszzz", utc()) # Example format, adjust to actual DB output
         if blockedUntilTime > now():
-          return some(blockedUntilTime)
+          return some(blockedUntilTime.toTime())
         else: # Expired ban
           return none(Time)
       except ValueError:
@@ -683,7 +683,7 @@ proc dbUpdateSessionCsrfToken*(sessionToken: string, newCsrfToken: string): bool
     ensureDbConnection()
     let query = "UPDATE sessions SET csrf_token = $1 WHERE session_token = $2"
     let params: array[2, cstring] = [newCsrfToken.cstring, sessionToken.cstring]
-    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     if not result:

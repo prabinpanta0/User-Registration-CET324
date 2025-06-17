@@ -1,6 +1,6 @@
 import jester, strutils, json, times, os, sequtils # Removed 'random'
 import nimcrypto/sysrand # For cryptographically secure random bytes
-import nimcrypto/hex # For hex encoding
+import nimcrypto/utils # For hex encoding
 import ../db/db
 import ../db/models
 import ../crypto/password

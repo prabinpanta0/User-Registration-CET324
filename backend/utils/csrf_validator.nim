@@ -10,12 +10,14 @@ import ../db/models # For Session model
 proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
   var submittedToken: string
 
-  # Try to get token from form body (common for standard HTML forms)
-  submittedToken = request.bodyParams.getOrDefault("csrf_token", "")
+  # Try to get token from form parameters (common for standard HTML forms)
+  # In Jester, form data is typically accessed through request.params
+  submittedToken = request.params.getOrDefault("csrf_token", "")
 
   # If not in form body, try headers (common for AJAX)
   if submittedToken.len == 0:
-    submittedToken = request.headers.getOrDefault("X-CSRF-Token", "")
+    if "X-CSRF-Token" in request.headers:
+      submittedToken = request.headers["X-CSRF-Token"]
 
   # If still not found, try query params (less common for CSRF, but possible)
   if submittedToken.len == 0:
