@@ -1,6 +1,7 @@
 import jester, strutils, json, times, os, sequtils # Removed 'random'
 import nimcrypto/sysrand # For cryptographically secure random bytes
 import nimcrypto/utils # For hex encoding
+import cookies # For cookie creation
 import ../db/db
 import ../db/models
 import ../crypto/password
@@ -48,7 +49,7 @@ proc getCurrentUser*(request: Request): User =
   ensureDbConnection()
   
   let session = dbGetSessionByToken(sessionToken)
-  echo "[DEBUG] getCurrentUser - session lookup result: userId=", session.userId, " token=", if session.token.len > 0: session.token[0..10] & "..." else: "NONE"
+  echo "[DEBUG] getCurrentUser - session lookup result: userId=", session.userId, " token=", if session.sessionToken.len > 0: session.sessionToken[0..10] & "..." else: "NONE"
   if session.userId == 0:
     echo "[DEBUG] getCurrentUser - invalid session"
     return User()  # Return empty user if invalid session
@@ -60,7 +61,7 @@ proc getCurrentUser*(request: Request): User =
 proc createSession*(userId: int, temporary: bool = false): string =
   # Generate a cryptographically secure session token
   var randomBytes: array[32, byte]
-  sysrand.randomBytes(randomBytes)
+  discard sysrand.randomBytes(randomBytes)
   result = toHex(randomBytes) # Results in a 64-character hex string
 
   # Set expiration time
@@ -92,13 +93,8 @@ routes:
       resp Http403, "CSRF token validation failed."
       return
     # Important: Clear the csrf_token_value cookie after successful use
-    # This needs access to the `response` object, which is tricky from a separate util
-    # without passing `response` around. The route handler should do this.
-    var csrfCookieToClear = newCookie("csrf_token_value", "", expires = past())
-    csrfCookieToClear.path = "/"
-    # csrfCookieToClear.secure = true # if set with Secure
-    csrfCookieToClear.sameSite = SameSite.Strict
-    setCookie(csrfCookieToClear) # Jester's setCookie on the implicit response object
+    # Use Jester's setCookie template directly
+    setCookie("csrf_token_value", "", expires = $(now() - 1.days), path = "/", sameSite = cookies.SameSite.Strict)
 
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
