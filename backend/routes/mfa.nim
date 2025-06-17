@@ -1,12 +1,13 @@
-import jester, json, strutils
+import jester, json, strutils, random # Added random for randomize()
 import ../db/db
 import ../crypto/aes
 # import ../utils/csrf # Removed this, assuming it's replaced by csrf_validator
 import ../utils/csrf_validator # Added new CSRF validator
 import ../crypto/password
-import nimcrypto, times, sequtils, random # nimcrypto for hmac_sha1, times for epochTime, random for rand in generateTotpSecret (now in utils)
+import nimcrypto, times, sequtils # nimcrypto for hmac_sha1, times for epochTime
 import ../routes/login
 import ../utils/totp_utils # Import the new utility module
+import ../utils/mfa_recovery_utils # Import for recovery codes
 import ../utils/rate_limit # Import for rate limiting
 
 # Rate Limiting Configurations for MFA
@@ -113,5 +114,30 @@ routes:
       echo "[MFA VERIFY] Failed to enable MFA in database"
       resp Http500, "Failed to enable MFA."
       return
-    echo "[MFA VERIFY] MFA enabled successfully"
-    resp Http200, "MFA enabled."
+    echo "[MFA VERIFY] MFA enabled successfully for user ID: ", user.id
+
+    # Generate and store recovery codes
+    randomize() # Ensure random is seeded before generating codes
+    let (plaintextCodes, hashedCodes) = generateRecoveryCodes()
+    if not dbSetUserRecoveryCodes(user.id, hashedCodes):
+      # Log the error, but MFA is already enabled.
+      # This is not ideal, user won't have recovery codes.
+      # Consider how to handle this case: maybe disable MFA again if codes can't be set?
+      # For now, log and proceed.
+      echo "[ERROR][MFA_RECOVERY] Failed to store recovery codes for user ID: ", user.id
+      # Potentially inform the user that recovery code generation failed.
+      # For this iteration, the success response won't include them if saving failed.
+      resp Http200, %*{"status": "mfa_enabled", "message": "MFA enabled, but recovery code generation failed. Please contact support."}
+      return
+
+    echo "[MFA_RECOVERY] Successfully generated and stored recovery codes for user ID: ", user.id
+
+    var responseJson = %*{
+      "status": "mfa_enabled",
+      "message": "MFA enabled successfully.",
+      "recovery_codes": newJArray()
+    }
+    for code in plaintextCodes:
+      responseJson["recovery_codes"].add(newJString(code))
+
+    resp Http200, $responseJson

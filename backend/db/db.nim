@@ -119,6 +119,85 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
     echo "[DB ERROR] Exception: ", e.msg
     result = false
 
+proc dbSetUserRecoveryCodes*(userId: int, hashedCodes: seq[string]): bool =
+  # Stores hashed recovery codes as a JSON array string.
+  # Note: The column is named recovery_codes_enc, but we are storing hashes.
+  # This could be renamed to recovery_codes_hashed in a future schema migration for clarity.
+  try:
+    ensureDbConnection()
+    var codesJsonArray = newJArray()
+    for codeHash in hashedCodes:
+      codesJsonArray.add(newJString(codeHash))
+    let codesJsonString = $codesJsonArray
+
+    let query = "UPDATE users SET recovery_codes_enc = $1 WHERE id = $2"
+    let userIdStr = $userId
+    let params: array[2, cstring] = [codesJsonString.cstring, userIdStr.cstring]
+
+    echo "[DB DEBUG] Setting recovery codes for user ID ", userId
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbSetUserRecoveryCodes failed for user ID ", userId, ": ", $pg.pqerrorMessage(dbConn)
+      let resultError = $pg.pqresultErrorMessage(res)
+      if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+    else:
+      echo "[DB DEBUG] Successfully set recovery codes for user ID ", userId
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbSetUserRecoveryCodes for user ID ", userId, ": ", e.msg
+    result = false
+
+proc dbGetUserRecoveryCodes*(userId: int): seq[string] =
+  # Retrieves and parses the JSON array of hashed recovery codes for a user.
+  result = @[]
+  try:
+    ensureDbConnection()
+    let query = "SELECT recovery_codes_enc FROM users WHERE id = $1"
+    let userIdStr = $userId
+    let params: array[1, cstring] = [userIdStr.cstring]
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
+      let codesJsonString = $pg.pqgetvalue(res, 0, 0)
+      if codesJsonString.len > 2 and not pg.pqgetisnull(res,0,0): # Not empty '[]' and not NULL
+        try:
+          let parsedJson = parseJson(codesJsonString)
+          if parsedJson.kind == JArray:
+            for item in parsedJson:
+              result.add(item.getStr())
+          else:
+            echo "[DB ERROR] recovery_codes_enc for user ID ", userId, " is not a JSON array: ", codesJsonString
+        except JsonParsingError as e:
+          echo "[DB ERROR] Failed to parse recovery_codes_enc JSON for user ID ", userId, ": ", codesJsonString, " Error: ", e.msg
+      else:
+        echo "[DB DEBUG] No recovery codes found or field is empty/null for user ID ", userId
+    else:
+      if pg.pqresultStatus(res) != pg.PGRES_TUPLES_OK: # Log if it's an actual query error
+          echo "[DB ERROR] dbGetUserRecoveryCodes query failed for user ID ", userId, ": ", $pg.pqerrorMessage(dbConn)
+          let resultError = $pg.pqresultErrorMessage(res)
+          if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
+
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbGetUserRecoveryCodes for user ID ", userId, ": ", e.msg
+  # Ensure result is always a sequence, even if empty on error or no codes
+  if result == nil: result = @[]
+
+
+proc dbUpdateUserRecoveryCodes*(userId: int, updatedHashedCodes: seq[string]): bool =
+  # This function is essentially the same as dbSetUserRecoveryCodes.
+  # It updates the stored recovery codes with a new list.
+  # If an empty sequence is passed, it will effectively clear the codes.
+  # Re-using dbSetUserRecoveryCodes for this purpose.
+  # A comment in dbSetUserRecoveryCodes already notes its usage for storing hashed codes.
+  echo "[DB DEBUG] Calling dbSetUserRecoveryCodes as dbUpdateUserRecoveryCodes for user ID ", userId
+  result = dbSetUserRecoveryCodes(userId, updatedHashedCodes)
+
+
 proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
   # Ensure database connection is active
   ensureDbConnection()

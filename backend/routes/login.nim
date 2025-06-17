@@ -1,12 +1,15 @@
-import jester, strutils, json, times, random, os
+import jester, strutils, json, times, os, sequtils # Removed 'random'
+import nimcrypto/sysrand # For cryptographically secure random bytes
+import nimcrypto/hex # For hex encoding
 import ../db/db
 import ../db/models
 import ../crypto/password
 import ../crypto/aes
 import ../utils/rate_limit
 import ../utils/audit_log
-import ../utils/totp_utils # Import for verifyTotp
-import ../utils/csrf_validator # Import CSRF validator
+import ../utils/totp_utils
+import ../utils/mfa_recovery_utils # For hashRecoveryCode
+import ../utils/csrf_validator
 
 # Rate Limiting Configurations
 const loginAttemptConfig = RateLimitConfig(
@@ -55,18 +58,13 @@ proc getCurrentUser*(request: Request): User =
   return user
 
 proc createSession*(userId: int, temporary: bool = false): string =
-  # Generate a random session token
-  randomize()
-  var token = ""
-  for i in 0..<32:
-    token.add char(rand(255))
-  
-  # Convert to hex string for safe storage
-  result = ""
-  for c in token:
-    result.add c.int.toHex(2).toLowerAscii()
-  
+  # Generate a cryptographically secure session token
+  var randomBytes: array[32, byte]
+  sysrand.randomBytes(randomBytes)
+  result = toHex(randomBytes) # Results in a 64-character hex string
+
   # Set expiration time
+  # Note: The `randomize()` call is removed as sysrand does not need it.
   let expiresAt = if temporary:
     # 10 minutes for MFA verification
     $((epochTime().int64 + 600))
@@ -128,18 +126,60 @@ routes:
     if lockoutUntil.len > 0 and lockoutUntil > $(epochTime().int64):
       resp Http403, "Account locked. Try again later."
       return
-    echo "[DEBUG] Verifying password. Salt length: ", user.passwordSalt.len, " Hash length: ", user.passwordHash.len
-    let passwordVerified = verifyPassword(password, user.passwordSalt, user.passwordHash)
-    echo "[DEBUG] Password verification result: ", passwordVerified
+    # Password verification logic with transparent migration
+    var passwordVerified = false
+    var needsMigration = false
+
+    # 1. Try verifying with Argon2id
+    echo "[DEBUG] Attempting Argon2id verification for user: ", user.username
+    if verifyPassword(password, user.passwordHash):
+      echo "[DEBUG] Argon2id verification successful for user: ", user.username
+      passwordVerified = true
+    else:
+      echo "[DEBUG] Argon2id verification failed for user: ", user.username
+      # 2. If Argon2id fails, check if it's an old hash (non-empty salt) and try legacy SHA256
+      if user.passwordSalt.len > 0:
+        echo "[DEBUG] Attempting legacy SHA256 verification for user: ", user.username
+        if verifyPassword_sha256_legacy(password, user.passwordSalt, user.passwordHash):
+          echo "[SECURITY_MIGRATION] Legacy SHA256 password verified for user: ", user.username, " (User ID: ", user.id, "). Upgrading to Argon2id."
+          passwordVerified = true
+          needsMigration = true
+        else:
+          echo "[DEBUG] Legacy SHA256 verification failed for user: ", user.username
+      # If salt is empty, it means it was already an Argon2id hash or a new account, and it failed.
+      # So, no further checks needed if salt is empty.
+
+    if passwordVerified and needsMigration:
+      try:
+        let newArgon2Hash = hashPassword(password) # Generate new Argon2id hash
+        # Update database with new hash and empty salt
+        if dbUpdateUserPassword(user.id, newArgon2Hash, ""):
+          echo "[SECURITY_MIGRATION] Password for user: ", user.username, " (User ID: ", user.id, ") successfully upgraded to Argon2id."
+          # Optionally, update the user object in memory if other parts of the code rely on it being immediately current,
+          # though for login flow, it might not be strictly necessary as session is created based on user.id.
+          # For example: user.passwordHash = newArgon2Hash; user.passwordSalt = ""
+        else:
+          echo "[ERROR][SECURITY_MIGRATION] Failed to upgrade password to Argon2id for user: ", user.username, " (User ID: ", user.id, ") due to DB error."
+          # Decide on behavior: proceed with login (less secure) or deny?
+          # For now, proceed with login as password was verified, but log failure.
+      except Exception as e:
+        echo "[ERROR][SECURITY_MIGRATION] Exception during password upgrade for user: ", user.username, " (User ID: ", user.id, "): ", e.msg
+        # Proceed with login, but log failure.
+
     if not passwordVerified:
+      echo "[AUDIT] Failed login attempt for user: ", user.username, " (User ID: ", user.id, ")"
       discard incrementFailedLogin(user.id)
-      logAudit("login_fail", ip, user.username)
+      logAudit("login_fail", ip, user.username) # Existing audit log
       let (failCount, _) = getUserLockoutInfo(user.id)
-      if failCount >= 5:
-        let until = $((epochTime().int64 + 600)) # lockout 10 min
+      if failCount >= loginAttemptConfig.maxAttemptsShortTerm: # Use configured value
+        let lockoutDuration = loginAttemptConfig.blockDurationSecLongTerm
+        let until = $((epochTime().int64 + lockoutDuration))
         discard setLockout(user.id, until)
+        echo "[AUDIT] User: ", user.username, " (User ID: ", user.id, ") locked out due to too many failed login attempts."
       resp Http401, "Invalid credentials."
       return
+
+    # If password verification was successful (either directly or via migration)
     discard resetFailedLogin(user.id)
     # NB: dbUpdateUserLastLogin is now called *after* isVerified check.
 
@@ -174,7 +214,9 @@ routes:
       var tempCookie = newCookie("temp_session", tempSessionToken, expires = now() + 10.minutes)
       tempCookie.path = "/"
       tempCookie.httpOnly = true
-      # tempCookie.secure = true # Add if HTTPS is enforced
+      tempCookie.secure = true # Enforce Secure flag
+      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
+      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
       tempCookie.sameSite = SameSite.Strict
       setCookie(tempCookie)
       responseJson["status"] = newJString("mfa_required") # Update status for MFA
@@ -185,7 +227,9 @@ routes:
       var sessionCookie = newCookie("session", sessionTokenValue, expires = now() + 7.days) # Example: 7 days expiry
       sessionCookie.path = "/"
       sessionCookie.httpOnly = true
-      # sessionCookie.secure = true # Add if HTTPS is enforced
+      sessionCookie.secure = true # Enforce Secure flag
+      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
+      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
       sessionCookie.sameSite = SameSite.Strict
       setCookie(sessionCookie)
       resp Http200, $responseJson
@@ -215,44 +259,92 @@ routes:
       return
 
     let body = parseJson(request.body)
-    let mfaCode = body["mfa_code"].getStr
+    let mfaCode = body.getOrDefault("mfa_code", "")
+    let recoveryCode = body.getOrDefault("mfa_recovery_code", "")
 
-    # Verify MFA code (placeholder implementation)
-    if mfaCode.len != 6:
-      resp Http400, "Invalid MFA code format."
+    let userId = getUserIdFromSession(tempSession)
+    if userId <= 0:
+      resp Http401, "Invalid session or user ID."
       return
 
-    # TODO: Implement actual MFA verification using the stored secret
-    let userId = getUserIdFromSession(tempSession)
-    if userId > 0:
-      let user = dbGetUserById(userId) # User object fetched here for MFA
-
-      # Check if user is verified (again, as this is a separate auth step)
-      if not user.isVerified:
-        # Clear temp session as it's no longer valid for an unverified user trying to complete MFA
-        setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
-        discard dbDeleteSession(tempSession)
-        resp Http401, "Account not verified. Cannot complete MFA."
+    let user = dbGetUserById(userId)
+    if user.id == 0: # Should not happen if getUserIdFromSession worked
+        resp Http500, "Failed to retrieve user details."
         return
 
-      if user.id > 0 and user.mfaEnabled:
-        # Get and decrypt the MFA secret
+    if not user.isVerified:
+      setCookie("temp_session", "", expires = past()) # Clear temp session
+      discard dbDeleteSession(tempSession)
+      resp Http401, "Account not verified. Cannot complete MFA."
+      return
+
+    var mfaVerified = false
+
+    if recoveryCode.len > 0:
+      echo "[MFA LOGIN] Attempting recovery code verification for user ID: ", userId
+      let storedHashedCodes = dbGetUserRecoveryCodes(userId) # Needs to be implemented
+      let submittedCodeHashed = hashRecoveryCode(recoveryCode)
+
+      var foundCode = false
+      var remainingCodes = newSeq[string]()
+      for storedHash in storedHashedCodes:
+        if storedHash == submittedCodeHashed:
+          foundCode = true
+          # Don't add the used code to remainingCodes
+        else:
+          remainingCodes.add(storedHash)
+
+      if foundCode:
+        echo "[MFA LOGIN] Recovery code verified for user ID: ", userId
+        if dbUpdateUserRecoveryCodes(userId, remainingCodes): # Needs to be implemented
+          echo "[MFA LOGIN] Successfully invalidated used recovery code for user ID: ", userId
+          mfaVerified = true
+        else:
+          echo "[ERROR][MFA LOGIN] Failed to invalidate used recovery code for user ID: ", userId
+          # Critical error: recovery code used but not invalidated. Deny login for safety.
+          resp Http500, "MFA processing error. Please try again."
+          return
+      else:
+        echo "[MFA LOGIN] Invalid recovery code for user ID: ", userId
+        # Note: We don't increment failed login attempts here as per typical recovery code behavior
+        # to avoid locking out due to recovery code typos. But this can be a policy decision.
+        resp Http400, "Invalid recovery code."
+        return
+
+    elif mfaCode.len > 0:
+      echo "[MFA LOGIN] Attempting TOTP verification for user ID: ", userId
+      if mfaCode.len != 6 or not mfaCode.allCharsInSet(Digits):
+        resp Http400, "Invalid MFA code format. Must be 6 digits."
+        return
+
+      if user.mfaEnabled: # Should always be true if they are at MFA step
         let key = getEnv("AES_KEY")
         let (encSecret, iv) = dbGetUserMfaSecret(user.id)
         if encSecret.len > 0 and iv.len > 0:
           try:
             let secret = aesGcmDecrypt(key, encSecret, iv)
-            if not verifyTotp(secret, mfaCode): # Use verifyTotp from totp_utils
+            if verifyTotp(secret, mfaCode):
+              echo "[MFA LOGIN] TOTP verified for user ID: ", userId
+              mfaVerified = true
+            else:
+              echo "[MFA LOGIN] Invalid TOTP code for user ID: ", userId
               resp Http400, "Invalid MFA code."
               return
-          except Exception as e: # Catch specific exceptions if possible, or log e.msg
-            # Log the error: echo "MFA verification exception: ", e.msg
+          except Exception as e:
+            echo "[ERROR][MFA LOGIN] Exception during TOTP verification for user ID: ", userId, " Error: ", e.msg
             resp Http500, "MFA verification failed due to an internal error."
             return
         else:
-          resp Http500, "MFA not properly configured."
+          resp Http500, "MFA not properly configured for user."
           return
-      
+      else: # Should not happen if flow is correct
+        resp Http500, "MFA not enabled for user."
+        return
+    else:
+      resp Http400, "No MFA code or recovery code provided."
+      return
+
+    if mfaVerified:
       # Clear temp session
       var tempCookieToClear = newCookie("temp_session", "", expires = past())
       tempCookieToClear.path = "/"
@@ -264,7 +356,9 @@ routes:
       var permanentCookie = newCookie("session", permanentSessionToken, expires = now() + 7.days)
       permanentCookie.path = "/"
       permanentCookie.httpOnly = true
-      # permanentCookie.secure = true # Add if HTTPS is enforced
+      permanentCookie.secure = true # Enforce Secure flag
+      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
+      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
       permanentCookie.sameSite = SameSite.Strict
       setCookie(permanentCookie)
 

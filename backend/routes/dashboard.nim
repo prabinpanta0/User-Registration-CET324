@@ -1,6 +1,7 @@
-import jester, json, times # Added times
+import jester, json, times, sequtils, random # Added random for randomize()
 import ../db/db
 import ../routes/login
+import ../utils/mfa_recovery_utils # For generateRecoveryCodes
 import ../crypto/password # Added crypto import
 import ../utils/hibp # Added HIBP import
 import ../utils/csrf_validator # Import CSRF validator
@@ -115,4 +116,63 @@ routes:
     if not deleteSessionById(sessionId):
       resp Http500, "Failed to terminate session."
       return
-    resp Http200, "Session terminated." 
+    resp Http200, "Session terminated."
+
+  get "/mfa/recovery-codes/status":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # CSRF check might not be strictly necessary for GETting status,
+    # but if there's any sensitivity, it can be added.
+    # For now, omitting for a status check.
+
+    if not user.mfaEnabled:
+      # If MFA is not enabled, they shouldn't have recovery codes.
+      resp Http200, %*{"has_codes": false, "count": 0, "mfa_enabled": false}
+      return
+
+    let hashedCodes = dbGetUserRecoveryCodes(user.id)
+    let count = hashedCodes.len
+
+    resp Http200, %*{
+      "has_codes": count > 0,
+      "count": count,
+      "mfa_enabled": true
+    }
+
+  post "/mfa/recovery-codes/regenerate":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
+    if not user.mfaEnabled:
+      # Should not happen if UI is correct, but good to check.
+      resp Http400, "MFA is not enabled for this account."
+      return
+
+    randomize() # Ensure RNG is seeded
+    let (plaintextCodes, hashedCodes) = generateRecoveryCodes()
+
+    if not dbSetUserRecoveryCodes(user.id, hashedCodes):
+      echo "[ERROR][RECOVERY_REGEN] Failed to store new recovery codes for user ID: ", user.id
+      resp Http500, "Failed to regenerate recovery codes. Please try again."
+      return
+
+    echo "[AUDIT][RECOVERY_REGEN] Successfully regenerated recovery codes for user ID: ", user.id
+
+    var responseJson = %*{
+      "status": "success",
+      "message": "Recovery codes regenerated successfully.",
+      "recovery_codes": newJArray()
+    }
+    for code in plaintextCodes:
+      responseJson["recovery_codes"].add(newJString(code))
+
+    resp Http200, $responseJson
