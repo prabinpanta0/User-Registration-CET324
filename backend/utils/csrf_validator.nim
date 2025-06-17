@@ -16,8 +16,10 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
 
   # If not in form body, try headers (common for AJAX)
   if submittedToken.len == 0:
-    if "X-CSRF-Token" in request.headers:
+    try:
       submittedToken = request.headers["X-CSRF-Token"]
+    except KeyError:
+      submittedToken = ""
 
   # If still not found, try query params (less common for CSRF, but possible)
   if submittedToken.len == 0:
