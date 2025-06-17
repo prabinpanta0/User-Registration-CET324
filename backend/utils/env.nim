@@ -25,3 +25,19 @@ proc getJwtSecret*(): string =
     # raise newException(ValueError, "JWT_SECRET environment variable is not set.")
     result = "a_s3cr3t_d3v3l0pm3nt_k3y_th4t_sh0uld_b3_ch4ng3d" # Fallback for dev if not set
     echo "[WARN] Using a default development JWT_SECRET. THIS IS INSECURE FOR PRODUCTION."
+
+proc getAuditLogEncryptionKey*(): string =
+  result = getEnv("AUDIT_LOG_ENCRYPTION_KEY", "")
+  if result.len == 0:
+    echo "[WARN] AUDIT_LOG_ENCRYPTION_KEY is not set. Audit log sensitive details will not be encrypted or a default key will be used."
+    # Provide a default development key. MUST be changed for production.
+    # It should be a 32-byte key for AES-256, typically hex-encoded if stored that way,
+    # or the raw bytes if the AES proc expects that. Assuming raw string bytes here.
+    # For hex, it would be 64 chars. Let's assume raw for now as per common Nim AES examples.
+    result = "d3v_4ud1t_k3y_must_b3_32_byt3s!" # Ensure this is 32 bytes if used directly
+    if result.len != 32:
+      echo "[CRITICAL ERROR] Default AUDIT_LOG_ENCRYPTION_KEY is not 32 bytes. Encryption will fail."
+      # Potentially raise error or use a correctly sized default for dev only.
+      # Forcing a 32-byte key for development to avoid AES errors.
+      result = "12345678901234567890123456789012" # 32 chars/bytes
+    echo "[WARN] Using a default development AUDIT_LOG_ENCRYPTION_KEY. THIS IS INSECURE FOR PRODUCTION."

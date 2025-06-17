@@ -28,6 +28,22 @@ CREATE TABLE sessions (
 
 CREATE TABLE blocked_ips (
     ip_address TEXT PRIMARY KEY,
-    blocked_until TIMESTAMP WITH TIME ZONE NOT NULL,
+    blocked_until TIMESTAMP WITH TIME ZONE NOT NULL, -- Or TIMESTAMPTZ, they are equivalent in behavior
     reason TEXT
 );
+
+CREATE TABLE audit_logs (
+    id SERIAL PRIMARY KEY,
+    event_type VARCHAR(100) NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, -- Keep audit even if user is deleted
+    client_ip VARCHAR(45), -- Accommodate IPv6
+    user_agent TEXT,
+    data JSONB, -- For non-sensitive, searchable details
+    iv TEXT, -- Store as hex string from AES GCM
+    encrypted_details TEXT, -- Store as hex string (ciphertext)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);
+CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);

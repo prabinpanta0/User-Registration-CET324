@@ -29,3 +29,14 @@ type
     ipAddress*: string
     blockedUntil*: string # Store as string, convert to/from timestamp as needed
     reason*: string
+
+  AuditLog* = object
+    id*: int
+    eventType*: string
+    userId*: Option[int] # Using Option for nullable foreign key
+    clientIp*: Option[string]
+    userAgent*: Option[string]
+    data*: Option[string] # JSONB stored as string, to be parsed by app
+    iv*: Option[string]
+    encryptedDetails*: Option[string]
+    createdAt*: string # ISO string representation of TIMESTAMPTZ

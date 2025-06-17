@@ -3,6 +3,7 @@ import ../db/db
 import ../utils/jwt_utils
 import ../utils/email_sender # For sending emails and getBaseUrl
 import ../utils/csrf_validator # Import CSRF validator
+import ../utils/audit_log # For new audit logging
 import ../crypto/password   # For hashPassword, generateSalt
 import ../utils/hibp        # For isPasswordPwned
 # Assuming validPassword from register.nim is needed, or similar logic here.
@@ -20,51 +21,41 @@ routes:
 
     let claimsOption = validateJwtToken(token)
     if claimsOption.isNone():
+      # Token validation failed (expired, bad signature, etc.)
+      discard logAuditEvent("EMAIL_VERIFY_TOKEN_VALIDATION_FAILURE", request, additionalData = %*{"reason": "validateJwtToken returned none", "token": token})
       resp Http400, "Invalid or expired verification token."
       return
 
     let claims = claimsOption.get()
     if not claims.hasKey("user_id") or not claims.hasKey("type") or \
        claims["type"].getStr() != "email_verification":
+      discard logAuditEvent("EMAIL_VERIFY_TOKEN_INVALID_PAYLOAD", request, additionalData = %*{"reason": "Missing user_id or type, or type mismatch", "claims": $claims})
       resp Http400, "Invalid token type or payload."
       return
 
-    let userId = claims["user_id"].getInt() # getInt will default to 0 if not a number or missing
-    if userId == 0: # Check if getInt failed or if user_id was actually 0 (though unlikely for DB IDs)
-        try: # More robust check for user_id
-            let userIdFromStr = claims["user_id"].getStr()
-            if userIdFromStr.len > 0 and parseInt(userIdFromStr) > 0:
-                # This case is complex, assume getInt() is sufficient for JsonNode from nim-jwt
-                # If nim-jwt stores numbers as strings in claims, then manual parsing is needed.
-                # For now, assuming getInt() works as expected for numeric claims.
-                discard
-            else:
-                resp Http400, "Invalid user ID in token."
-                return
-        except ValueError: # if getStr then parseInt fails
-            resp Http400, "Invalid user ID format in token."
-            return
-        except KeyError: # if "user_id" key is missing (already checked by hasKey)
-            resp Http400, "User ID missing in token."
-            return
+    let userId = claims["user_id"].getInt()
+    if userId == 0:
+      discard logAuditEvent("EMAIL_VERIFY_TOKEN_INVALID_USERID", request, additionalData = %*{"reason": "User ID in token is 0 or invalid", "claims": $claims})
+      resp Http400, "Invalid user ID in token."
+      return
 
-
-    # Ensure database connection
     ensureDbConnection()
-
-    let user = dbGetUserById(userId) # Fetch user to ensure they exist
+    let user = dbGetUserById(userId)
     if user.id == 0:
-        resp Http400, "User not found for this token."
-        return
+      discard logAuditEvent("EMAIL_VERIFY_USER_NOT_FOUND", request, userId = some(userId), additionalData = %*{"reason": "User ID from token not found in DB"})
+      resp Http400, "User not found for this token."
+      return
 
     if user.isVerified:
-        resp Http200, "Email already verified. You can log in."
-        return
+      discard logAuditEvent("EMAIL_VERIFY_ALREADY_VERIFIED", request, userId = some(userId))
+      resp Http200, "Email already verified. You can log in."
+      return
 
     if dbSetUserVerified(userId):
+      discard logAuditEvent("EMAIL_VERIFY_SUCCESS", request, userId = some(userId))
       resp Http200, "Email verified successfully. You can now log in."
     else:
-      # Log this server-side, as it's an internal issue if token was valid but DB update failed.
+      discard logAuditEvent("EMAIL_VERIFY_DB_UPDATE_FAILURE", request, userId = some(userId), additionalData = %*{"reason": "dbSetUserVerified returned false"})
       echo "[ERROR] Failed to set user as verified in DB for user ID: ", userId
       resp Http500, "Failed to verify email. Please try again later or contact support."
 
@@ -79,6 +70,8 @@ routes:
         isPostSessionContext = true
 
     if not verifyCsrf(request, isPreSession = not isPostSessionContext):
+      let currentUserId = if isPostSessionContext: dbGetSessionByToken(sessionTokenCookie).userId.some else: none[int]()
+      discard logAuditEvent("CSRF_VALIDATION_FAILED", request, userId = currentUserId, additionalData=%*{"route": "/request-password-reset", "context": if isPostSessionContext: "session" else: "pre-session"})
       resp Http403, "CSRF token validation failed."
       return
 
@@ -93,21 +86,21 @@ routes:
     let body = parseJson(request.body)
     let email = body.getOrDefault("email", "").getStr()
 
-    if email.len == 0 or not email.contains("@"): # Basic email validation
+    if email.len == 0 or not email.contains("@"):
+      discard logAuditEvent("PASSWORD_RESET_REQUEST_INVALID_EMAIL_FORMAT", request, additionalData = %*{"provided_email": email})
       resp Http400, "Invalid email format."
       return
 
     ensureDbConnection()
     let user = dbGetUserByUsernameOrEmail(email)
 
-    if user.id != 0 and user.isVerified: # User exists and is verified
+    if user.id != 0 and user.isVerified:
       let resetClaims = %*{"user_id": user.id, "type": "password_reset"}
-      # Expiry: 1 hour for password reset
-      let resetToken = generateJwtToken(resetClaims, 1 * 3600)
+      let resetToken = generateJwtToken(resetClaims, 1 * 3600) # 1 hour expiry
 
       if resetToken.len > 0:
         let baseUrl = getBaseUrl()
-        let resetLink = baseUrl & "/reset-password?token=" & resetToken # Assuming frontend route
+        let resetLink = baseUrl & "/reset-password?token=" & resetToken
         let emailSubject = "Password Reset Request"
         let emailBody = "Please click the link below to reset your password:\n\n" &
                         resetLink & "\n\nThis link will expire in 1 hour. " &
@@ -115,15 +108,16 @@ routes:
 
         let emailSent = await sendEmail(user.email, emailSubject, emailBody)
         if not emailSent:
-          echo "[ERROR] Failed to send password reset email to ", user.email, " for user ID ", user.id
-          # Still respond with generic message below
+          discard logAuditEvent("PASSWORD_RESET_EMAIL_SEND_FAILURE", request, some(user.id), additionalData = %*{"email": user.email})
         else:
-          echo "[INFO] Password reset email sent to ", user.email, " for user ID ", user.id
+          discard logAuditEvent("PASSWORD_RESET_EMAIL_SENT_SUCCESS", request, some(user.id), additionalData = %*{"email": user.email})
       else:
-        echo "[ERROR] Failed to generate password reset token for user ID ", user.id
-        # Still respond with generic message
+        discard logAuditEvent("PASSWORD_RESET_TOKEN_GEN_FAILURE", request, some(user.id))
+    else:
+      # User not found or not verified, log this attempt if desired (might contribute to enumeration if logs are monitored for specific emails)
+      # For now, just falling through to generic response.
+      discard logAuditEvent("PASSWORD_RESET_REQUEST_USER_NOT_FOUND_OR_UNVERIFIED", request, additionalData = %*{"attempted_email": email})
 
-    # Always respond with a generic success message to prevent email enumeration
     resp Http200, "If an account with that email exists and is verified, a password reset link has been sent."
 
   post "/perform-password-reset":
@@ -131,6 +125,8 @@ routes:
     # So, CSRF protection relies on the double submit cookie (`csrf_token_value`)
     # that should have been set when the page with this form was loaded (after calling /csrf-token).
     if not verifyCsrf(request, isPreSession = true):
+      # Log CSRF failure. User ID not available yet from token.
+      discard logAuditEvent("CSRF_VALIDATION_FAILED", request, additionalData=%*{"route": "/perform-password-reset", "context": "pre-session"})
       resp Http403, "CSRF token validation failed."
       return
     # Clear the double submit cookie after successful use
@@ -146,53 +142,62 @@ routes:
     let confirmPassword = body.getOrDefault("confirm_password", "").getStr()
 
     if token.len == 0:
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_FAILURE_NO_TOKEN", request)
       resp Http400, "Password reset token is missing."
       return
     if newPassword != confirmPassword:
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_FAILURE_PW_MISMATCH", request)
       resp Http400, "New passwords do not match."
       return
 
-    # Use the shared validPassword logic
     if not validPassword(newPassword):
-        resp Http400, "Password does not meet complexity requirements."
-        return
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_FAILURE_INVALID_PW", request)
+      resp Http400, "Password does not meet complexity requirements."
+      return
 
     let claimsOption = validateJwtToken(token)
+    var tempUserId: Option[int] = none() # For logging before full claim validation
+    if claimsOption.isSome() and claimsOption.get().hasKey("user_id"):
+        tempUserId = some(claimsOption.get()["user_id"].getInt())
+
     if claimsOption.isNone():
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_TOKEN_VALIDATION_FAILURE", request, userId=tempUserId, additionalData = %*{"reason": "validateJwtToken returned none"})
       resp Http400, "Invalid or expired password reset token."
       return
 
     let claims = claimsOption.get()
     if not claims.hasKey("user_id") or not claims.hasKey("type") or \
        claims["type"].getStr() != "password_reset":
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_TOKEN_INVALID_PAYLOAD", request, userId=tempUserId, additionalData = %*{"reason": "Missing user_id or type, or type mismatch", "claims": $claims})
       resp Http400, "Invalid token type or payload for password reset."
       return
 
     let userId = claims["user_id"].getInt()
-    if userId == 0: # Basic check
-        resp Http400, "Invalid user ID in reset token."
-        return
+    if userId == 0:
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_TOKEN_INVALID_USERID", request, additionalData = %*{"reason": "User ID in token is 0", "claims": $claims})
+      resp Http400, "Invalid user ID in reset token."
+      return
 
-    # HIBP Check for the new password
     if await isPasswordPwned(newPassword):
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_FAILURE_PWNED_PW", request, some(userId))
       resp Http400, "This new password has been exposed in data breaches. Please choose a different one."
       return
 
     ensureDbConnection()
-    let user = dbGetUserById(userId) # Ensure user still exists
+    let user = dbGetUserById(userId)
     if user.id == 0:
-        resp Http400, "User not found for this reset token."
-        return
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_USER_NOT_FOUND", request, some(userId), additionalData = %*{"reason": "User ID from token not found in DB"})
+      resp Http400, "User not found for this reset token."
+      return
 
-    # Hash the new password
     let salt = generateSalt()
     let hash = hashPassword(newPassword, salt)
 
-    # dbUpdateUserPassword also checks password history
     if dbUpdateUserPassword(userId, hash, salt):
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_SUCCESS", request, some(userId))
       resp Http200, "Password reset successfully. You can now log in with your new password."
     else:
-      # This could be due to history check in dbUpdateUserPassword or other DB error
+      discard logAuditEvent("PASSWORD_RESET_PERFORM_DB_UPDATE_FAILURE", request, some(userId), additionalData=%*{"reason": "dbUpdateUserPassword failed, possibly history or other DB error"})
       resp Http400, "Failed to reset password. The new password may have been used previously, or a server error occurred."
 
   # discard routes # No longer needed if all routes are used.

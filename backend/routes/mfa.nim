@@ -3,11 +3,13 @@ import ../db/db
 import ../crypto/aes
 # import ../utils/csrf # Removed this, assuming it's replaced by csrf_validator
 import ../utils/csrf_validator # Added new CSRF validator
+import ../utils/audit_log # For new audit logging
 import ../crypto/password
 import nimcrypto, times, sequtils, random # nimcrypto for hmac_sha1, times for epochTime, random for rand in generateTotpSecret (now in utils)
 import ../routes/login
 import ../utils/totp_utils # Import the new utility module
 import ../utils/rate_limit # Import for rate limiting
+import std/options # For Option type
 
 # Rate Limiting Configurations for MFA
 const mfaSetupConfig = RateLimitConfig(
@@ -33,6 +35,7 @@ routes:
 
     # CSRF Check (session-bound)
     if not verifyCsrf(request):
+      discard logAuditEvent("CSRF_VALIDATION_FAILED", request, userId = user.id.some, additionalData=%*{"route": "/mfa/setup"})
       resp Http403, "CSRF token validation failed."
       return
 
@@ -45,12 +48,16 @@ routes:
     let key = getEnv("AES_KEY")
     let (encSecret, iv) = aesGcmEncrypt(key, secret)
     if not dbSetUserMfaSecret(user.id, encSecret, iv):
+      discard logAuditEvent("MFA_SETUP_FAILURE", request, some(user.id), additionalData=%*{"reason": "Failed to store MFA secret in DB"})
       resp Http500, "Failed to store MFA secret."
       return
+
     # Generate otpauth URL
     let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
+
+    discard logAuditEvent("MFA_SETUP_SECRET_GENERATED", request, some(user.id)) # Secret itself not logged
     # Return data for client-side QR generation
-    resp Http200, %*{"otpauth": otpauth, "secret": secret}
+    resp Http200, %*{"otpauth": otpauth, "secret": secret} # Secret is returned to client for QR, client should not store it long term.
 
   post "/mfa/verify":
     let user = getCurrentUser(request)
@@ -60,6 +67,7 @@ routes:
 
     # CSRF Check (session-bound)
     if not verifyCsrf(request):
+      discard logAuditEvent("CSRF_VALIDATION_FAILED", request, userId = user.id.some, additionalData=%*{"route": "/mfa/verify"})
       resp Http403, "CSRF token validation failed."
       return
 
@@ -74,9 +82,14 @@ routes:
     let key = getEnv("AES_KEY")
     let secret = aesGcmDecrypt(key, encSecret, iv)
     if not verifyTotp(secret, code, 30, 1): # Explicitly pass default period and window
+      discard logAuditEvent("MFA_VERIFY_CODE_INVALID", request, some(user.id))
       resp Http400, "Invalid code."
       return
+
     if not dbEnableUserMfa(user.id):
+      discard logAuditEvent("MFA_VERIFY_ENABLE_DB_FAILURE", request, some(user.id))
       resp Http500, "Failed to enable MFA."
       return
+
+    discard logAuditEvent("MFA_VERIFY_SUCCESS_ENABLED", request, some(user.id))
     resp Http200, "MFA enabled."

@@ -6,7 +6,9 @@ import ../utils/hibp # Added HIBP import
 import ../utils/email_sender # Added Email Sender
 import ../utils/jwt_utils # Added JWT Utils
 import ../utils/csrf_validator # Import CSRF validator
+import ../utils/audit_log # For new audit logging
 import ../routes/login
+import std/options # For Option type
 
 # Rate Limiting Configuration for Registration
 const registerAttemptConfig = RateLimitConfig(
@@ -59,27 +61,40 @@ routes:
     let honeypot = if body.hasKey("website"): body["website"].getStr else: ""
 
     if honeypot.len > 0:
+      discard logAuditEvent("REGISTER_FAILURE_HONEYPOT", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Bot detected."
       return
     if password != confirm:
+      discard logAuditEvent("REGISTER_FAILURE_PASSWORD_MISMATCH", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Passwords do not match."
       return
     if not validPassword(password):
+      discard logAuditEvent("REGISTER_FAILURE_INVALID_PASSWORD", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Password does not meet requirements."
       return
     if not validUsername(username):
+      discard logAuditEvent("REGISTER_FAILURE_INVALID_USERNAME", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Invalid username."
       return
     if not validEmail(email):
+      discard logAuditEvent("REGISTER_FAILURE_INVALID_EMAIL", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Invalid email."
       return
-    if not verifyCaptcha(ip, captcha):
+    if not verifyCaptcha(ip, captcha): # Assuming verifyCaptcha is still relevant
+      discard logAuditEvent("REGISTER_FAILURE_INVALID_CAPTCHA", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "Invalid captcha."
       return
 
     # Check if password is pwned
     if await isPasswordPwned(password):
+      discard logAuditEvent("REGISTER_FAILURE_PWNED_PASSWORD", request, additionalData = %*{"username": username, "email": email})
       resp Http400, "This password has been exposed in data breaches. Please choose a different password."
+      return
+
+    # Check if user already exists (moved from main.nim logic)
+    if dbUserExists(username, email):
+      discard logAuditEvent("REGISTER_FAILURE_USER_EXISTS", request, additionalData = %*{"username": username, "email": email})
+      resp Http409, "Username or email already exists." # 409 Conflict
       return
 
     let salt = generateSalt()
@@ -90,15 +105,26 @@ routes:
     echo "[DEBUG] Insert result: ", insertResult
     
     if not insertResult:
-      echo "[ERROR] Failed to insert user into database"
-      resp Http500, "User registration failed. Please try again."
+      echo "[ERROR] Failed to insert user into database for username: ", username
+      discard logAuditEvent("REGISTER_FAILURE_DB_INSERT", request, additionalData = %*{"username": username, "email": email, "error": "dbInsertUser returned false"})
+      resp Http500, "User registration failed due to a server error. Please try again."
       return
     
-    # Get the newly created user
+    # Get the newly created user to obtain ID
     let user = dbGetUserByUsernameOrEmail(username)
     if user.id == 0:
-      resp Http500, "User creation failed."
+      # This case should ideally not happen if insertResult was true.
+      echo "[ERROR] Failed to retrieve user after insert for username: ", username
+      discard logAuditEvent("REGISTER_FAILURE_DB_RETRIEVE", request, additionalData = %*{"username": username, "email": email, "error": "dbGetUserByUsernameOrEmail returned no user after insert"})
+      resp Http500, "User registration encountered an issue. Please try again."
       return
+
+    discard logAuditEvent(
+      eventType = "REGISTER_SUCCESS_PENDING_VERIFICATION",
+      request = request,
+      userId = some(user.id),
+      additionalData = %*{"username": user.username, "email": user.email}
+    )
     
     # User inserted successfully (is_verified is false by default)
     # Send verification email

@@ -14,6 +14,8 @@ import routes/dashboard
 import routes/mfa
 import routes/email_verification_routes
 import utils/ddos_protector # Import DDoS Protector
+import utils/network # For getClientIp
+import utils/audit_log # For logging in hook
 
 # --- Helper Procedures ---
 
@@ -33,20 +35,7 @@ proc generateSecureRandomToken(length: int = 32): string =
   for b in bytes:
     result.add b.toHex(2).toLowerAscii()
 
-proc getClientIp(request: Request): string =
-  # Order of preference: X-Forwarded-For (if multiple, take first), X-Real-IP, remoteAddress
-  var ip = request.headers.getOrDefault("X-Forwarded-For", "")
-  if ip.len > 0:
-    let parts = ip.split(',')
-    if parts.len > 0:
-      let firstIp = parts[0].strip()
-      if firstIp.len > 0: return firstIp
-  
-  ip = request.headers.getOrDefault("X-Real-IP", "")
-  if ip.len > 0:
-    return ip
-  
-  return request.remoteAddress
+# getClientIp moved to backend/utils/network.nim
 
 # --- Jester Routes ---
 
@@ -64,12 +53,19 @@ routes:
       let blockedUntil = blockedStatusOption.get
       if blockedUntil > now():
         echo "[WARN] Blocked IP attempted access: ", clientIp, " - Blocked until: ", $blockedUntil
+        discard logAuditEvent(
+          eventType = "ACCESS_DENIED_IP_BLOCKED_DB",
+          request = request # Passes clientIp, userAgent implicitly
+        )
         resp Http403, "Access denied. Your IP is currently blocked."
         finish()
+      # else: ban expired, can log this if desired
 
     # Check for rate limiting (in-memory check, then potential ban via DB)
-    if await isRateLimited(clientIp):
-      echo "[WARN] Rate limit exceeded by IP (hook): ", clientIp
+    if await isRateLimited(clientIp): # isRateLimited now handles its own audit log for actual blocking
+      echo "[WARN] Rate limit exceeded by IP (hook), request blocked: ", clientIp
+      # Note: isRateLimited would have already logged IP_BLOCKED_RATE_LIMIT if it decided to ban.
+      # This response is for the current request that triggered the check.
       resp Http429, "Too many requests. Your IP has been temporarily blocked."
       finish()
 

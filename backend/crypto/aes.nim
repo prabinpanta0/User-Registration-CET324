@@ -1,99 +1,142 @@
-import nimcrypto, base64, os
-import nimcrypto/sysrand
+import nimcrypto/aes # For aes256 type
+import nimcrypto/gcm # For GCM context
+import nimcrypto/random # For sysrand.randomBytes
+import nimcrypto/utils # For toHex, fromHex
+import os, strutils # For getEnv and string operations
 
-proc randomBytes*(len: int): seq[byte] =
-  result = newSeq[byte](len) # Initialize the sequence first
-  discard sysrand.randomBytes(result) # Call with the openArray, discard int return
+# AES-256-GCM constants
+const
+  AES_KEY_SIZE* = 32 # bytes for AES-256
+  GCM_IV_SIZE* = 12  # bytes, 96 bits is recommended for GCM
+  GCM_TAG_SIZE* = 16 # bytes, 128 bits for authentication tag
 
-proc getAesKey*(): seq[byte] =
-  # Get AES key from environment, must be 32 bytes for AES-256
-  let keyStr = getEnv("AES_KEY")
-  if keyStr.len == 0:
-    raise newException(OSError, "AES_KEY environment variable not set")
-  
-  if keyStr.len != 32:
-    raise newException(ValueError, "AES_KEY must be 32 bytes long")
+proc generateKey*(): seq[byte] =
+  ## Generates a random key of AES_KEY_SIZE bytes.
+  result = newSeq[byte](AES_KEY_SIZE)
+  randomBytes(result)
 
-  result = newSeq[byte](keyStr.len)
-  for i in 0..<keyStr.len:
-    result[i] = byte(keyStr[i])
+proc keyFromHex*(hexKey: string): seq[byte] =
+  ## Converts a hex-encoded key string to seq[byte].
+  if hexKey.len != AES_KEY_SIZE * 2:
+    raise newException(ValueError, "AES key hex string must be " & $(AES_KEY_SIZE * 2) & " characters long.")
+  try:
+    result = hexKey.fromHex()
+  except ValueError:
+    raise newException(ValueError, "Invalid hex string for AES key.")
 
-proc aesEncrypt*(plaintext: string): (string, string) =
-  # Generate random IV for CBC mode
-  let ivBytes = randomBytes(16)  # AES block size is 16 bytes
-  let key = getAesKey()
-  
-  # Convert plaintext to bytes and apply PKCS7 padding
-  var plaintextBytes = newSeq[byte](plaintext.len)
-  for i in 0..<plaintext.len:
-    plaintextBytes[i] = byte(plaintext[i])
-  
-  # PKCS7 padding
-  let blockSize = 16
-  let padLen = blockSize - (plaintextBytes.len mod blockSize)
-  for i in 0..<padLen:
-    plaintextBytes.add(byte(padLen))
-  
-  # Encrypt using AES-256-CBC
-  var ctx: CBC[aes256]
-  ctx.init(key, ivBytes)  # Both key and ivBytes are seq[byte]
-  
+proc aesGcmEncrypt*(key: seq[byte], plaintext: string): (string, string) =
+  ## Encrypts plaintext using AES-256-GCM.
+  ## Returns (hexEncodedCiphertextAndTag, hexEncodedIv).
+  ## Ciphertext includes the authentication tag appended to it.
+  if key.len != AES_KEY_SIZE:
+    raise newException(ValueError, "AES key must be " & $AES_KEY_SIZE & " bytes long.")
+
+  var iv = newSeq[byte](GCM_IV_SIZE)
+  randomBytes(iv)
+
+  var gcmCtx: GCM[aes256]
+  gcmCtx.init(key, iv)
+
+  let plaintextBytes = cast[seq[byte]](plaintext)
   var ciphertext = newSeq[byte](plaintextBytes.len)
-  ctx.encrypt(plaintextBytes, ciphertext)  # Both are seq[byte]
-  ctx.clear()
+  var tag = newSeq[byte](GCM_TAG_SIZE)
   
-  result = (encode(ciphertext), encode(ivBytes))
+  gcmCtx.encrypt(plaintextBytes, ciphertext)
+  gcmCtx.finish(tag) # Get the authentication tag
+  gcmCtx.clear()
 
-proc aesDecrypt*(b64ciphertext, b64iv: string): string =
-  let ivStr = decode(b64iv)
-  let ciphertextStr = decode(b64ciphertext)
-  let key = getAesKey()
+  # Append tag to ciphertext before hex encoding
+  let ciphertextWithTag = ciphertext & tag
   
-  # Convert decoded strings to byte sequences
-  var ivBytes = newSeq[byte](ivStr.len)
-  for i in 0..<ivStr.len:
-    ivBytes[i] = byte(ivStr[i])
+  return (toHex(ciphertextWithTag), toHex(iv))
+
+proc aesGcmDecrypt*(key: seq[byte], hexCiphertextAndTag: string, hexIv: string): string =
+  ## Decrypts hex-encoded ciphertext (with appended tag) using AES-256-GCM and hex-encoded IV.
+  ## Returns plaintext string. Raises error on authentication or decryption failure.
+  if key.len != AES_KEY_SIZE:
+    raise newException(ValueError, "AES key must be " & $AES_KEY_SIZE & " bytes long.")
+
+  var iv: seq[byte]
+  try:
+    iv = hexIv.fromHex()
+  except ValueError:
+    raise newException(ValueError, "Invalid IV hex string.")
   
-  var ciphertextBytes = newSeq[byte](ciphertextStr.len)
-  for i in 0..<ciphertextStr.len:
-    ciphertextBytes[i] = byte(ciphertextStr[i])
+  if iv.len != GCM_IV_SIZE:
+    raise newException(ValueError, "IV must be " & $GCM_IV_SIZE & " bytes long.")
+
+  var ciphertextWithTag: seq[byte]
+  try:
+    ciphertextWithTag = hexCiphertextAndTag.fromHex()
+  except ValueError:
+    raise newException(ValueError, "Invalid ciphertext hex string.")
+
+  if ciphertextWithTag.len < GCM_TAG_SIZE:
+    raise newException(ValueError, "Ciphertext is too short to contain a tag.")
+
+  # Split ciphertext and tag
+  let ciphertext = ciphertextWithTag[0 .. ^(GCM_TAG_SIZE+1)]
+  let receivedTag = ciphertextWithTag[^GCM_TAG_SIZE .. ^1]
+
+  var gcmCtx: GCM[aes256]
+  gcmCtx.init(key, iv)
+
+  var plaintextBytes = newSeq[byte](ciphertext.len)
+  gcmCtx.decrypt(ciphertext, plaintextBytes)
   
-  # Decrypt using AES-256-CBC
-  var ctx: CBC[aes256]
-  ctx.init(key, ivBytes)  # Both key and ivBytes are now seq[byte]
+  var calculatedTag = newSeq[byte](GCM_TAG_SIZE)
+  gcmCtx.finish(calculatedTag) # Get the calculated tag
+  gcmCtx.clear()
+
+  if calculatedTag != receivedTag:
+    # Authentication failed! Do not use plaintext.
+    raise newException(ValueError, "AES-GCM authentication failed (tag mismatch).")
   
-  var plaintext = newSeq[byte](ciphertextBytes.len)
-  ctx.decrypt(ciphertextBytes, plaintext)  # Both are now seq[byte]
-  ctx.clear()
-  
-  # Remove PKCS7 padding
-  if plaintext.len > 0:
-    let padLen = int(plaintext[^1])
-    if padLen > 0 and padLen <= 16 and padLen <= plaintext.len:
-      # Verify padding is correct
-      var validPadding = true
-      for i in (plaintext.len - padLen)..<plaintext.len:
-        if plaintext[i] != byte(padLen):
-          validPadding = false
-          break
-      
-      if validPadding:
-        let unpaddedText = plaintext[0..<(plaintext.len - padLen)]
-        result = newString(unpaddedText.len)
-        for i in 0..<unpaddedText.len:
-          result[i] = char(unpaddedText[i])
-      else:
-        raise newException(ValueError, "Invalid PKCS7 padding")
+  result = cast[string](plaintextBytes)
+
+# Example usage or for tests (can be in a separate test file)
+when isMainModule:
+  echo "AES GCM Tests"
+  # Example key (in production, use a securely generated and stored key)
+  # let keyHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" # 64 hex chars = 32 bytes
+  # var aesKey = keyFromHex(keyHex)
+  var aesKey = generateKey() # Generate a random key for this test run
+  echo "Generated AES Key (hex): ", toHex(aesKey)
+
+  let plaintext = "Hello, AES-GCM world! This is a secret message."
+  echo "Plaintext: ", plaintext
+
+  try:
+    let (encryptedHex, ivHex) = aesGcmEncrypt(aesKey, plaintext)
+    echo "Encrypted (hex): ", encryptedHex
+    echo "IV (hex): ", ivHex
+
+    let decryptedText = aesGcmDecrypt(aesKey, encryptedHex, ivHex)
+    echo "Decrypted: ", decryptedText
+
+    if decryptedText == plaintext:
+      echo "AES-GCM Encrypt/Decrypt Successful!"
     else:
-      raise newException(ValueError, "Invalid padding length")
-  else:
-    result = ""
+      echo "AES-GCM Test Failed: Decrypted text does not match original."
 
-# Convenience function that takes key as parameter (for backward compatibility)
-proc aesEncrypt*(key: string, plaintext: string): (string, string) {.deprecated: "AES key parameter is ignored; key is always sourced from AES_KEY env var. This function will be removed in a future version.".} =
-  # Ignore the key parameter and use environment key instead
-  result = aesEncrypt(plaintext)
+    # Test tampering (should fail decryption/authentication)
+    echo "\nTesting tampered ciphertext..."
+    let tamperedEncryptedHex = encryptedHex[0 .. ^5] & "0000" # Modify last few bytes
+    try:
+      let tamperedDecrypted = aesGcmDecrypt(aesKey, tamperedEncryptedHex, ivHex)
+      echo "Tampered Decryption Succeeded (UNEXPECTED): ", tamperedDecrypted
+    except ValueError as e:
+      echo "Tampered Decryption Failed as Expected: ", e.msg
 
-proc aesDecrypt*(key, b64ciphertext, b64iv: string): string {.deprecated: "AES key parameter is ignored; key is always sourced from AES_KEY env var. This function will be removed in a future version.".} =
-  # Ignore the key parameter and use environment key instead
-  result = aesDecrypt(b64ciphertext, b64iv)
+    echo "\nTesting with wrong IV..."
+    var wrongIv = ivHex.fromHex()
+    wrongIv[0] = wrongIv[0] xor 0xFF # Flip some bits in IV
+    let wrongIvHex = toHex(wrongIv)
+    try:
+      let decryptedWithWrongIv = aesGcmDecrypt(aesKey, encryptedHex, wrongIvHex)
+      echo "Decryption with wrong IV Succeeded (UNEXPECTED): ", decryptedWithWrongIv
+    except ValueError as e:
+      echo "Decryption with wrong IV Failed as Expected: ", e.msg
+
+  except Exception as e:
+    echo "Error during AES GCM test: ", e.msg

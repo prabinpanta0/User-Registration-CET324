@@ -675,30 +675,7 @@ proc dbRevokeSession*(sessionId: int): bool =
 
 # --- Blocked IP Management ---
 
-proc dbAddBlockedIp*(ipAddress: string, blockedUntilEpoch: string, reason: string): bool =
-  try:
-    ensureDbConnection()
-    # PostgreSQL's to_timestamp() expects a double precision Unix epoch value.
-    let query = "INSERT INTO blocked_ips (ip_address, blocked_until, reason) VALUES ($1, to_timestamp($2::double precision), $3) ON CONFLICT (ip_address) DO UPDATE SET blocked_until = EXCLUDED.blocked_until, reason = EXCLUDED.reason"
-    let params: array[3, cstring] = [ipAddress.cstring, blockedUntilEpoch.cstring, reason.cstring]
-
-    echo "[DB DEBUG] Adding/Updating blocked IP: ", ipAddress, " until epoch: ", blockedUntilEpoch, " for reason: ", reason
-    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
-    defer: pg.pqclear(res)
-
-    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
-    if not result:
-      echo "[DB ERROR] dbAddBlockedIp failed: ", $pg.pqerrorMessage(dbConn)
-      let resultError = $pg.pqresultErrorMessage(res)
-      if resultError.len > 0: echo "[DB ERROR] Result error: ", resultError
-    echo "[DB DEBUG] dbAddBlockedIp result: ", result
-
-  except Exception as e:
-    echo "[DB ERROR] Exception in dbAddBlockedIp: ", e.msg # This dbAddBlockedIp seems to be from a previous version/task.
-    result = false
-
-# proc dbGetBlockedIp*(ipAddress: string): BlockedIp = # This was the old version
-#  This is replaced by getBlockedStatus which returns Option[Time]
+# proc dbGetBlockedIp*(ipAddress: string): BlockedIp = # This was the old version, replaced by getBlockedStatus
 
 proc dbRemoveBlockedIp*(ipAddress: string): bool =
   try:
@@ -738,3 +715,65 @@ proc dbRemoveExpiredBlockedIps*(): bool =
   except Exception as e:
     echo "[DB ERROR] Exception in dbRemoveExpiredBlockedIps: ", e.msg
     result = false
+
+proc dbInsertAuditLog*(
+  eventType: string,
+  userId: Option[int],
+  clientIp: Option[string],
+  userAgent: Option[string],
+  jsonData: Option[JsonNode],
+  iv: Option[string],
+  encryptedDetails: Option[string]
+): Future[bool] {.async.} =
+  try:
+    ensureDbConnection()
+    let query = """
+      INSERT INTO audit_logs (event_type, user_id, client_ip, user_agent, data, iv, encrypted_details, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    """
+    # pqexecParams needs an array of cstrings for parameters.
+    # Optional values need to be handled: pass NULL or the value.
+    # For Option[int], value or NULL. For Option[string], value or NULL. For Option[JsonNode], $value or NULL.
+
+    var params: array[7, cstring]
+    var paramValues: array[7, Option[string]] # Temporary storage for optional string values
+
+    params[0] = eventType.cstring
+
+    if userId.isSome(): paramValues[1] = some($userId.get()) else: paramValues[1] = none[string]()
+    params[1] = if userId.isSome(): paramValues[1].get().cstring else: nil
+
+    if clientIp.isSome(): paramValues[2] = clientIp else: paramValues[2] = none[string]()
+    params[2] = if clientIp.isSome(): paramValues[2].get().cstring else: nil
+
+    if userAgent.isSome(): paramValues[3] = userAgent else: paramValues[3] = none[string]()
+    params[3] = if userAgent.isSome(): paramValues[3].get().cstring else: nil
+
+    if jsonData.isSome(): paramValues[4] = some($jsonData.get()) else: paramValues[4] = none[string]()
+    params[4] = if jsonData.isSome(): paramValues[4].get().cstring else: nil
+
+    if iv.isSome(): paramValues[5] = iv else: paramValues[5] = none[string]()
+    params[5] = if iv.isSome(): paramValues[5].get().cstring else: nil
+
+    if encryptedDetails.isSome(): paramValues[6] = encryptedDetails else: paramValues[6] = none[string]()
+    params[6] = if encryptedDetails.isSome(): paramValues[6].get().cstring else: nil
+
+    # Debugging parameter setup
+    # for i, p_val in params:
+    #   if p_val == nil: echo "[DB AUDIT PARAMS] Param ", i+1, ": NULL"
+    #   else: echo "[DB AUDIT PARAMS] Param ", i+1, ": '", string(p_val), "'"
+
+
+    let res = pg.pqexecParams(dbConn, query.cstring, 7, nil, params[0].addr, nil, nil, 0)
+    defer: pg.pqclear(res)
+
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] dbInsertAuditLog failed: ", $pg.pqerrorMessage(dbConn)
+      let resultError = $pg.pqresultErrorMessage(res)
+      if resultError.len > 0: echo "[DB ERROR] Result error for audit log: ", resultError
+    # else: echo "[DB DEBUG] Audit log inserted successfully." # Can be too verbose
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbInsertAuditLog: ", e.msg
+    result = false
+  return result

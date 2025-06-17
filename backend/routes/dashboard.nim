@@ -4,7 +4,9 @@ import ../routes/login
 import ../crypto/password # Added crypto import
 import ../utils/hibp # Added HIBP import
 import ../utils/csrf_validator # Import CSRF validator
+import ../utils/audit_log # For new audit logging
 import ../routes/register import validPassword # Import specific proc
+import std/options # For Option type
 
 # Helper to check password expiry
 proc isPasswordExpired(passwordLastChanged: string): bool =
@@ -68,38 +70,29 @@ routes:
     let salt = generateSalt() # Corrected function name
     let hash = hashPassword(newpw, salt) # Assuming hashPassword is from ../crypto/password
     if not dbUpdateUserPassword(user.id, hash, salt):
-      # dbUpdateUserPassword returns false if the new password is in the recent history,
-      # or if there was a general database error during the update.
+      discard logAuditEvent("PASSWORD_CHANGE_FAILURE", request, some(user.id), additionalData=%*{"reason": "DB update failed, possibly history or other error"})
       resp Http400, "Failed to update password. The new password may be one of the last 5 passwords used, or a server error occurred. Please try a different password."
       return
+
+    discard logAuditEvent("PASSWORD_CHANGE_SUCCESS", request, some(user.id))
     resp Http200, "Password changed."
 
-  post "/sessions/list":
-    let user = getCurrentUser(request)
-    if user.id == 0:
-      resp Http401, "Not authenticated."
-      return
-    let sessions = listSessionsForUser(user.id)
-    resp Http200, %*sessions
-
-  post "/sessions/terminate":
+  post "/sessions/list": # Assuming this POST is intentional and needs CSRF
     let user = getCurrentUser(request)
     if user.id == 0:
       resp Http401, "Not authenticated."
       return
 
-    # CSRF Check (session-bound)
-    # Note: /sessions/list is a POST currently but might be better as GET if it's just fetching data.
-    # If it remains POST and modifies/logs something sensitive, CSRF is good.
-    # For now, applying CSRF as it's a POST.
-    if not verifyCsrf(request): # Assuming /sessions/list might have side-effects or is sensitive
+    if not verifyCsrf(request):
+      discard logAuditEvent("CSRF_VALIDATION_FAILED", request, userId = user.id.some, additionalData=%*{"route": "/sessions/list"})
       resp Http403, "CSRF token validation failed."
       return
 
     let sessions = listSessionsForUser(user.id)
+    # No specific audit log for listing, unless very sensitive.
     resp Http200, %*sessions
 
-  post "/sessions/terminate":
+  post "/sessions/terminate": # This is the correct /sessions/terminate
     let user = getCurrentUser(request)
     if user.id == 0:
       resp Http401, "Not authenticated."
@@ -113,6 +106,9 @@ routes:
     let body = parseJson(request.body)
     let sessionId = body["session_id"].getInt
     if not deleteSessionById(sessionId):
+      discard logAuditEvent("SESSION_TERMINATE_FAILURE", request, some(user.id), additionalData=%*{"target_session_id": $sessionId, "reason": "dbDeleteSessionById failed"})
       resp Http500, "Failed to terminate session."
       return
-    resp Http200, "Session terminated." 
+
+    discard logAuditEvent("SESSION_TERMINATE_SUCCESS", request, some(user.id), additionalData=%*{"terminated_session_id": $sessionId})
+    resp Http200, "Session terminated."

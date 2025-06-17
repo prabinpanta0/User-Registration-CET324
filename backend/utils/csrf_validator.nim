@@ -1,6 +1,7 @@
-import jester, strutils, options
+import jester, strutils, options, json
 import ../db/db # For dbGetSessionByToken
 import ../db/models # For Session model
+import ./audit_log # For logging CSRF failures
 
 # Note: The `setCookie` used here is Jester's `setCookie(Response, Cookie)`
 # For deleting, we'd typically pass a cookie with expiry in the past.
@@ -23,33 +24,40 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
 
   if submittedToken.len == 0:
     echo "[CSRF FAIL] Submitted CSRF token is missing."
+    # Log this failure. User ID might not be available.
+    discard logAuditEvent("CSRF_VALIDATION_FAILURE_TOKEN_MISSING", request)
     return false
 
   if isPreSession:
-    # Double Submit Cookie: Compare with csrf_token_value cookie
     let cookieToken = request.cookies.getOrDefault("csrf_token_value", "")
     if cookieToken.len == 0:
       echo "[CSRF FAIL] CSRF cookie (csrf_token_value) is missing for pre-session check."
+      discard logAuditEvent("CSRF_VALIDATION_FAILURE_PRE_SESSION_COOKIE_MISSING", request)
       return false
 
     if submittedToken == cookieToken:
       echo "[CSRF OK] Pre-session CSRF token matches cookie."
-      # The calling route should handle deleting/expiring the csrf_token_value cookie.
       return true
     else:
       echo "[CSRF FAIL] Pre-session CSRF token mismatch. Submitted: '", submittedToken, "', Cookie: '", cookieToken, "'"
+      discard logAuditEvent("CSRF_VALIDATION_FAILURE_PRE_SESSION_MISMATCH", request,
+        additionalData = %*{"submitted_token": submittedToken, "cookie_token": cookieToken})
       return false
   else:
-    # Synchronizer Token Pattern: Compare with token in session (DB)
     let sessionTokenCookie = request.cookies.getOrDefault("session", "")
     if sessionTokenCookie.len == 0:
       echo "[CSRF FAIL] Main session cookie is missing for authenticated CSRF check."
+      discard logAuditEvent("CSRF_VALIDATION_FAILURE_SESSION_COOKIE_MISSING", request)
       return false
 
-    ensureDbConnection() # Ensure DB connection before query
+    ensureDbConnection()
     let userSession = dbGetSessionByToken(sessionTokenCookie)
-    if userSession.id == 0 or userSession.csrfToken.len == 0: # No valid session or no CSRF token in session
+    var userIdForLog: Option[int] = none()
+    if userSession.id != 0: userIdForLog = some(userSession.userId)
+
+    if userSession.id == 0 or userSession.csrfToken.len == 0:
       echo "[CSRF FAIL] No valid session or CSRF token not found in session. Session ID: ", userSession.id
+      discard logAuditEvent("CSRF_VALIDATION_FAILURE_NO_SESSION_OR_TOKEN_IN_SESSION", request, userId = userIdForLog)
       return false
 
     if submittedToken == userSession.csrfToken:
@@ -57,6 +65,8 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
       return true
     else:
       echo "[CSRF FAIL] Session CSRF token mismatch for user ID: ", userSession.userId, ". Submitted: '", submittedToken, "', Session stores: '", userSession.csrfToken, "'"
+      discard logAuditEvent("CSRF_VALIDATION_FAILURE_SESSION_MISMATCH", request, userId = userIdForLog,
+        additionalData = %*{"submitted_token": submittedToken, "expected_token_snippet": userSession.csrfToken[0 .. min(userSession.csrfToken.len-1, 5)] & "..."})
       return false
 
 # Helper to be called by routes after successful pre-session CSRF verification

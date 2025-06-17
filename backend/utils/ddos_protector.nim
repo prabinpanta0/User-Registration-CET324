@@ -1,7 +1,8 @@
-import std/[tables, times, locks, sugar]
-import collections/ringbuffers # Nim's standard library for ring buffers
-import asyncdispatch # For Future type
-import ../db/db # For dbBlockIp
+import std/[tables, times, locks, sugar, json, options]
+import collections/ringbuffers
+import asyncdispatch
+import ../db/db
+import ./audit_log # For logging
 
 const
   REQUEST_LIMIT_PER_WINDOW* = 100
@@ -57,12 +58,23 @@ proc isRateLimited*(ip: string): Future[bool] {.async.} =
 
   if banUser:
     echo "[WARN] Rate limit exceeded for IP: ", ip, ". Count: ", currentRequestsInWindow
-    # The dbBlockIp proc needs to be available and correctly implemented.
-    # It's an async proc, so we need to await it.
-    if await dbBlockIp(ip, "Rate limit exceeded in-app (DDOS_PROTECTOR)", BAN_DURATION_MINUTES):
+    let reason = "Rate limit exceeded in-app (DDOS_PROTECTOR)"
+    if await dbBlockIp(ip, reason, BAN_DURATION_MINUTES):
       echo "[INFO] IP ", ip, " banned for ", BAN_DURATION_MINUTES, " minutes due to rate limit."
+      # Log audit event for IP block due to rate limit
+      discard logAuditEvent(
+        eventType = "IP_BLOCKED_RATE_LIMIT",
+        clientIpOverride = some(ip),
+        additionalData = %*{"reason": reason, "duration_minutes": BAN_DURATION_MINUTES, "triggering_count": currentRequestsInWindow}
+      )
     else:
       echo "[ERROR] Failed to ban IP ", ip, " via dbBlockIp after rate limit breach."
+      # Log failure to ban
+      discard logAuditEvent(
+        eventType = "IP_BLOCK_FAILED_RATE_LIMIT",
+        clientIpOverride = some(ip),
+        additionalData = %*{"reason": reason, "error": "dbBlockIp returned false"}
+      )
     return true
 
   return false

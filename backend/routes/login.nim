@@ -4,9 +4,10 @@ import ../db/models
 import ../crypto/password
 import ../crypto/aes
 import ../utils/rate_limit
-import ../utils/audit_log
+import ../utils/audit_log # This is the new audit_log to use
 import ../utils/totp_utils # Import for verifyTotp
 import ../utils/csrf_validator # Import CSRF validator
+import std/options # For Option type for userId in logAuditEvent
 
 # Rate Limiting Configurations
 const loginAttemptConfig = RateLimitConfig(
@@ -120,35 +121,71 @@ routes:
     echo "[DEBUG] User found: ", user.id, " username: ", user.username, " email: ", user.email
     if user.id == 0:
       echo "[DEBUG] User not found for: ", userOrEmail
-      logAudit("login_fail", ip, userOrEmail)
+      discard logAuditEvent(
+        eventType = "LOGIN_FAILURE_USER_NOT_FOUND",
+        request = request,
+        additionalData = %*{"attempted_username": userOrEmail}
+      )
       resp Http401, "Invalid credentials."
       return
+
     # Check lockout
     let (_, lockoutUntil) = getUserLockoutInfo(user.id)
     if lockoutUntil.len > 0 and lockoutUntil > $(epochTime().int64):
+      discard logAuditEvent(
+        eventType = "LOGIN_FAILURE_ACCOUNT_LOCKED",
+        request = request,
+        userId = some(user.id),
+        additionalData = %*{"username": user.username, "lockout_until_epoch": lockoutUntil}
+      )
       resp Http403, "Account locked. Try again later."
       return
+
     echo "[DEBUG] Verifying password. Salt length: ", user.passwordSalt.len, " Hash length: ", user.passwordHash.len
     let passwordVerified = verifyPassword(password, user.passwordSalt, user.passwordHash)
     echo "[DEBUG] Password verification result: ", passwordVerified
     if not passwordVerified:
       discard incrementFailedLogin(user.id)
-      logAudit("login_fail", ip, user.username)
-      let (failCount, _) = getUserLockoutInfo(user.id)
-      if failCount >= 5:
-        let until = $((epochTime().int64 + 600)) # lockout 10 min
-        discard setLockout(user.id, until)
+      let (failCount, newLockoutUntil) = getUserLockoutInfo(user.id)
+      var auditData = %*{"username": user.username, "fail_count": %failCount}
+      if failCount >= 5: # Assuming 5 is the lockout threshold
+        let lockoutDurationSecs = 600 # 10 minutes
+        let currentEpoch = epochTime().int64
+        let untilEpoch = currentEpoch + lockoutDurationSecs
+        if setLockout(user.id, $untilEpoch): # setLockout expects string epoch
+          auditData["lockout_set_until_epoch"] = % $untilEpoch
+        else:
+          auditData["lockout_set_failed"] = % true
+
+      discard logAuditEvent(
+        eventType = "LOGIN_FAILURE_INVALID_PASSWORD",
+        request = request,
+        userId = some(user.id),
+        additionalData = auditData
+      )
       resp Http401, "Invalid credentials."
       return
+
     discard resetFailedLogin(user.id)
-    # NB: dbUpdateUserLastLogin is now called *after* isVerified check.
 
     # Check if user is verified
     if not user.isVerified:
+      discard logAuditEvent(
+        eventType = "LOGIN_FAILURE_NOT_VERIFIED",
+        request = request,
+        userId = some(user.id),
+        additionalData = %*{"username": user.username}
+      )
       resp Http401, "Account not verified. Please check your email."
       return
 
-    discard dbUpdateUserLastLogin(user.id) # Update last login timestamp only for verified, successful login
+    discard dbUpdateUserLastLogin(user.id)
+
+    discard logAuditEvent(
+      eventType = "LOGIN_SUCCESS",
+      request = request,
+      userId = some(user.id)
+    )
 
     # Check password expiry
     var passwordExpired = false
@@ -177,12 +214,18 @@ routes:
       # tempCookie.secure = true # Add if HTTPS is enforced
       tempCookie.sameSite = SameSite.Strict
       setCookie(tempCookie)
-      responseJson["status"] = newJString("mfa_required") # Update status for MFA
+
+      discard logAuditEvent( # Audit MFA step initiation
+        eventType = "MFA_STEP_INITIATED",
+        request = request,
+        userId = some(user.id)
+      )
+      responseJson["status"] = newJString("mfa_required")
       resp Http200, $responseJson
     else:
-      # Generate session token and set it as a cookie
+      # LOGIN_SUCCESS already logged
       let sessionTokenValue = createSession(user.id)
-      var sessionCookie = newCookie("session", sessionTokenValue, expires = now() + 7.days) # Example: 7 days expiry
+      var sessionCookie = newCookie("session", sessionTokenValue, expires = now() + 7.days)
       sessionCookie.path = "/"
       sessionCookie.httpOnly = true
       # sessionCookie.secure = true # Add if HTTPS is enforced
@@ -242,17 +285,41 @@ routes:
         if encSecret.len > 0 and iv.len > 0:
           try:
             let secret = aesGcmDecrypt(key, encSecret, iv)
-            if not verifyTotp(secret, mfaCode): # Use verifyTotp from totp_utils
+            if not verifyTotp(secret, mfaCode):
+              discard logAuditEvent(
+                eventType = "MFA_VERIFY_FAILURE",
+                request = request,
+                userId = some(user.id),
+                additionalData = %*{"reason": "Invalid MFA code provided"}
+              )
               resp Http400, "Invalid MFA code."
               return
-          except Exception as e: # Catch specific exceptions if possible, or log e.msg
-            # Log the error: echo "MFA verification exception: ", e.msg
+          except Exception as e:
+            discard logAuditEvent(
+                eventType = "MFA_VERIFY_ERROR",
+                request = request,
+                userId = some(user.id),
+                additionalData = %*{"error": e.msg, "reason": "Exception during TOTP verification"}
+              )
             resp Http500, "MFA verification failed due to an internal error."
             return
         else:
+          discard logAuditEvent(
+            eventType = "MFA_VERIFY_ERROR",
+            request = request,
+            userId = some(user.id),
+            additionalData = %*{"reason": "MFA secret not found or not configured in DB"}
+          )
           resp Http500, "MFA not properly configured."
           return
       
+      # MFA successful for this user
+      discard logAuditEvent(
+        eventType = "MFA_VERIFY_SUCCESS", # This implies final login success after MFA
+        request = request,
+        userId = some(user.id)
+      )
+
       # Clear temp session
       var tempCookieToClear = newCookie("temp_session", "", expires = past())
       tempCookieToClear.path = "/"
@@ -285,19 +352,31 @@ routes:
       resp Http401, "Invalid session."
 
   post "/logout":
-    let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
-    let tempSession = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
+    let sessionTokenValue = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+    let tempSessionTokenValue = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
     
-    if sessionToken.len > 0:
-      discard dbDeleteSession(sessionToken)
-      var sessionCookieToClear = newCookie("session", "", expires = past())
-      sessionCookieToClear.path = "/"
-      setCookie(sessionCookieToClear)
+    var loggedOutUserId: Option[int] = none()
+
+    if sessionTokenValue.len > 0:
+      let session = dbGetSessionByToken(sessionTokenValue)
+      if session.userId != 0: loggedOutUserId = some(session.userId)
+      discard dbDeleteSession(sessionTokenValue)
+      var sc = newCookie("session", "", expires = past())
+      sc.path = "/"
+      setCookie(sc)
     
-    if tempSession.len > 0:
-      discard dbDeleteSession(tempSession)
-      var tempCookieToClear = newCookie("temp_session", "", expires = past())
-      tempCookieToClear.path = "/"
-      setCookie(tempCookieToClear)
+    if tempSessionTokenValue.len > 0:
+      if loggedOutUserId.isNone():
+          let tempSess = dbGetSessionByToken(tempSessionTokenValue)
+          if tempSess.userId != 0: loggedOutUserId = some(tempSess.userId)
+      discard dbDeleteSession(tempSessionTokenValue)
+      var tc = newCookie("temp_session", "", expires = past())
+      tc.path = "/"
+      setCookie(tc)
     
+    discard logAuditEvent(
+      eventType = "LOGOUT_SUCCESS",
+      request = request,
+      userId = loggedOutUserId
+    )
     resp Http200, "Logged out."
