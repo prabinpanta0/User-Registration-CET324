@@ -3,6 +3,8 @@ import postgres as pg
 import models
 import times, random
 import json
+import asyncdispatch
+import options
 
 var captchaStore: Table[string, string]
 var dbConn: pg.PPGconn
@@ -186,7 +188,7 @@ proc dbGetUserRecoveryCodes*(userId: int): seq[string] =
   except Exception as e:
     echo "[DB ERROR] Exception in dbGetUserRecoveryCodes for user ID ", userId, ": ", e.msg
   # Ensure result is always a sequence, even if empty on error or no codes
-  if result == nil: result = @[]
+  if result.len == 0: result = @[]
 
 
 proc dbUpdateUserRecoveryCodes*(userId: int, updatedHashedCodes: seq[string]): bool =
@@ -306,12 +308,15 @@ proc dbInsertSession*(userId: int, token: string, expiresAt: string, csrfToken: 
     # Initialize csrf_token to empty string if not provided, or use provided value
     let query = "INSERT INTO sessions (user_id, session_token, created_at, expires_at, csrf_token) VALUES ($1, $2, now(), to_timestamp($3), $4)"
     let userIdStr = $userId
-    let params: array[4, cstring] = [userIdStr.cstring, token.cstring, expiresAt.cstring, csrfToken.cstring]
+    let tokenCstr = token.cstring
+    let expiresAtCstr = expiresAt.cstring
+    let csrfTokenCstr = csrfToken.cstring
+    let cParams: array[4, cstring] = [userIdStr.cstring, tokenCstr, expiresAtCstr, csrfTokenCstr]
 
     echo "[DB DEBUG] Inserting session: userId=", userId, " token=", token[0..10], "... expiresAt=", expiresAt, " csrf_token=", csrfToken
     echo "[DB DEBUG] Session insert query: INSERT INTO sessions (user_id, session_token, created_at, expires_at, csrf_token) VALUES ($1, $2, now(), to_timestamp($3), $4)"
 
-    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, cast[cstringArray](cParams[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     echo "[DB DEBUG] Session insert result: ", result
@@ -410,8 +415,6 @@ proc dbEnableUserMfa*(userId: int): bool =
     echo "[DB ERROR] dbEnableUserMfa failed: ", e.msg
     result = false
 
-import json # Add json import for parsing history
-
 proc dbUpdateUserPassword*(userId: int, newHash, newSalt: string): bool =
   # This function now returns bool for success/failure, error messages should be handled by caller
   try:
@@ -459,7 +462,7 @@ proc dbUpdateUserPassword*(userId: int, newHash, newSalt: string): bool =
     let params: array[4, cstring] = [newHash.cstring, newSalt.cstring, historyJsonString.cstring, userIdStr.cstring]
 
     echo "[DB DEBUG] Updating password for user ", userId, " with history: ", historyJsonString
-    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
 
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
@@ -480,7 +483,7 @@ proc dbSetUserVerified*(userId: int): bool =
     let query = "UPDATE users SET is_verified = TRUE WHERE id = $1"
     let userIdStr = $userId
     let params: array[1, cstring] = [userIdStr.cstring]
-    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
     if not result:
@@ -621,13 +624,13 @@ proc dbBlockIp*(ipAddress: string, reason: string, durationMinutes: int): Future
     ensureDbConnection()
     let blockedUntilTime = now() + initDuration(minutes = durationMinutes)
     # PostgreSQL's to_timestamp expects epoch seconds as double.
-    let blockedUntilEpochStr = $(blockedUntilTime.toUnixFloat())
+    let blockedUntilEpochStr = $(blockedUntilTime.toTime().toUnixFloat())
 
     let query = "INSERT INTO blocked_ips (ip_address, blocked_until, reason) VALUES ($1, to_timestamp($2::double precision), $3) ON CONFLICT (ip_address) DO UPDATE SET blocked_until = EXCLUDED.blocked_until, reason = EXCLUDED.reason"
     let params: array[3, cstring] = [ipAddress.cstring, blockedUntilEpochStr.cstring, reason.cstring]
 
     echo "[DB DEBUG] Blocking IP: ", ipAddress, " until epoch: ", blockedUntilEpochStr, " for reason: ", reason
-    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 3, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
 
     result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
@@ -648,7 +651,7 @@ proc getBlockedStatus*(ipAddress: string): Future[Option[Time]] {.async.} =
     let query = "SELECT blocked_until FROM blocked_ips WHERE ip_address = $1"
     let params: array[1, cstring] = [ipAddress.cstring]
 
-    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, params[0].addr, nil, nil, 0)
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
 
     if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
