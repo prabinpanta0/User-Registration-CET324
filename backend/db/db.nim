@@ -2,6 +2,7 @@ import tables, os, strutils
 import postgres as pg
 import models
 import times, random
+import json
 
 var captchaStore: Table[string, string]
 var dbConn: pg.PPGconn
