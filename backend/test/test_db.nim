@@ -1,5 +1,5 @@
-import utils/env
-import db/db
+import ../utils/env
+import ../db/db
 import os
 
 when isMainModule:

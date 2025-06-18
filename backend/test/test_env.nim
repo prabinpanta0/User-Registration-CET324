@@ -1,4 +1,4 @@
-import utils/env
+import ../utils/env
 import os
 
 when isMainModule:
