@@ -10,19 +10,9 @@ document.addEventListener('DOMContentLoaded', function() {
   const toggleMfaInputLink = document.getElementById('toggleMfaInputLink');
   let usingRecoveryCode = false;
 
-  const captchaImg = document.getElementById('captchaImg');
-  const captchaErrorDiv = document.getElementById('captchaError');
   const csrfTokenInput = document.getElementById('csrfTokenInput');
   const mfaCsrfTokenInput = document.getElementById('mfaCsrfTokenInput');
   const submitBtn = document.getElementById('submitBtn'); // Login form submit button
-
-  function refreshCaptcha() {
-    if (captchaImg && captchaErrorDiv) {
-    captchaImg.classList.remove('hidden');
-    captchaErrorDiv.classList.add('hidden');
-      captchaImg.src = '/captcha?' + Date.now();
-    }
-  }
 
   function showMfaForm() {
     if (loginForm && mfaFormContainer) {
@@ -41,11 +31,6 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // Attach event listeners
-  const refreshCaptchaBtn = document.getElementById('refreshCaptchaBtn');
-  if (refreshCaptchaBtn) {
-    refreshCaptchaBtn.addEventListener('click', refreshCaptcha);
-  }
-
   const backToLoginBtn = document.getElementById('backToLoginBtn');
   if (backToLoginBtn) {
     backToLoginBtn.addEventListener('click', showLoginForm);
@@ -106,9 +91,32 @@ document.addEventListener('DOMContentLoaded', function() {
   if (loginForm) {
     loginForm.addEventListener('submit', function(e) {
       e.preventDefault();
+      
+      // Get hCaptcha response
+      const hcaptchaResponse = window.hcaptcha ? window.hcaptcha.getResponse() : '';
+      if (!hcaptchaResponse) {
+        if (typeof Toastify === 'function') {
+          Toastify({
+            text: 'Please complete the captcha verification.',
+            duration: 3000,
+            close: true,
+            gravity: "top",
+            position: "right",
+            backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+            stopOnFocus: true,
+          }).showToast();
+        } else {
+          alert('Please complete the captcha verification.');
+        }
+        return;
+      }
+      
       const formData = new FormData(loginForm);
       const data = {};
       formData.forEach((v, k) => data[k] = v);
+      
+      // Add hCaptcha response
+      data['h-captcha-response'] = hcaptchaResponse;
 
       if (submitBtn) {
         submitBtn.disabled = true;
@@ -163,7 +171,10 @@ document.addEventListener('DOMContentLoaded', function() {
           } else {
             alert(msg || 'Login failed. Please try again.');
           }
-          refreshCaptcha();
+          // Reset hCaptcha widget
+          if (window.hcaptcha) {
+            window.hcaptcha.reset();
+          }
         }
       }).catch(err => {
         if (submitBtn) {
@@ -182,6 +193,10 @@ document.addEventListener('DOMContentLoaded', function() {
           }).showToast();
         } else {
           alert('Network error. Please try again.');
+        }
+        // Reset hCaptcha widget
+        if (window.hcaptcha) {
+          window.hcaptcha.reset();
         }
         console.error('Login fetch error:', err);
       });

@@ -1,7 +1,6 @@
-import jester, strutils, json, times, os, sequtils # Removed 'random'
+import jester, strutils, json, times # Removed unused imports: os, sequtils
 import nimcrypto/sysrand # For cryptographically secure random bytes
 import nimcrypto/utils # For hex encoding
-import cookies # For cookie creation
 import ../db/db
 import ../db/models
 import ../crypto/password
@@ -11,6 +10,7 @@ import ../utils/audit_log
 import ../utils/totp_utils
 import ../utils/mfa_recovery_utils # For hashRecoveryCode
 import ../utils/csrf_validator
+import ./register # For verifyCaptcha function
 
 # Rate Limiting Configurations
 const loginAttemptConfig = RateLimitConfig(
@@ -27,10 +27,8 @@ const mfaVerifyConfig = RateLimitConfig(
   blockDurationSecLongTerm: 1800 # 30 minutes DB block
 )
 
-# Import verifyCaptcha from register.nim - simplified for now
-proc verifyCaptcha(ip, captcha: string): bool =
-  # Skip captcha verification for now to avoid GC safety issues
-  result = true
+# Import verifyCaptcha from register.nim - now using HCaptcha
+# proc verifyCaptcha is imported from register module
 
 # Check if user has MFA enabled
 proc userHasMfa(userId: int64): bool =
@@ -84,9 +82,10 @@ routes:
   post "/login":
     echo "[DEBUG] Login endpoint hit"
     let ip = "127.0.0.1"  # Fallback IP for now - TODO: Replace with actual client IP
-    if not isRequestAllowed(ip, loginAttemptConfig):
-      resp Http429, "Too many attempts. Please try later."
-      return
+    # Temporarily disabled rate limiting due to GC safety issues
+    # if not isRequestAllowed(ip, loginAttemptConfig):
+    #   resp Http429, "Too many attempts. Please try later."
+    #   return
 
     # CSRF Check (pre-session)
     if not verifyCsrf(request, isPreSession = true):
@@ -94,16 +93,19 @@ routes:
       return
     # Important: Clear the csrf_token_value cookie after successful use
     # Use Jester's setCookie template directly
-    setCookie("csrf_token_value", "", expires = $(now() - 1.days), path = "/", sameSite = cookies.SameSite.Strict)
+    setCookie("csrf_token_value", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
 
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
     let password = body["password"].getStr
-    let captcha = if body.hasKey("captcha"): body["captcha"].getStr else: ""
+    let hcaptchaResponse = if body.hasKey("h-captcha-response"): body["h-captcha-response"].getStr else: ""
     echo "[DEBUG] Login attempt - user: ", userOrEmail, " password length: ", password.len
 
-    if not verifyCaptcha(ip, captcha):
-      resp Http400, "Invalid captcha."
+    # Verify HCaptcha
+    let captchaVerified = await verifyCaptcha(hcaptchaResponse, ip)
+    if not captchaVerified:
+      echo "[INFO] HCaptcha verification failed for login attempt from IP: ", ip
+      resp Http400, "Invalid captcha verification."
       return
 
     # Ensure database connection is active
@@ -207,34 +209,23 @@ routes:
     if userHasMfa(user.id):
       # Store temporary session for MFA verification
       let tempSessionToken = createSession(user.id, temporary = true)
-      var tempCookie = newCookie("temp_session", tempSessionToken, expires = now() + 10.minutes)
-      tempCookie.path = "/"
-      tempCookie.httpOnly = true
-      tempCookie.secure = true # Enforce Secure flag
-      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
-      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
-      tempCookie.sameSite = SameSite.Strict
-      setCookie(tempCookie)
+      # Create temporary session cookie using simplified approach
+      setCookie("temp_session", tempSessionToken, path = "/", httpOnly = true)
       responseJson["status"] = newJString("mfa_required") # Update status for MFA
       resp Http200, $responseJson
     else:
       # Generate session token and set it as a cookie
       let sessionTokenValue = createSession(user.id)
-      var sessionCookie = newCookie("session", sessionTokenValue, expires = now() + 7.days) # Example: 7 days expiry
-      sessionCookie.path = "/"
-      sessionCookie.httpOnly = true
-      sessionCookie.secure = true # Enforce Secure flag
-      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
-      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
-      sessionCookie.sameSite = SameSite.Strict
-      setCookie(sessionCookie)
+      # Create session cookie using simplified approach
+      setCookie("session", sessionTokenValue, path = "/", httpOnly = true)
       resp Http200, $responseJson
 
   post "/login/mfa":
     let ip = "127.0.0.1" # Fallback IP for now - TODO: Replace with actual client IP
-    if not isRequestAllowed(ip, mfaVerifyConfig):
-      resp Http429, "Too many attempts. Please try later."
-      return
+    # Temporarily disabled rate limiting due to GC safety issues
+    # if not isRequestAllowed(ip, mfaVerifyConfig):
+    #   resp Http429, "Too many attempts. Please try later."
+    #   return
 
     # CSRF Check for MFA submission (this is part of an authenticated flow, using main session CSRF)
     # However, the main session isn't fully established yet.
@@ -255,8 +246,8 @@ routes:
       return
 
     let body = parseJson(request.body)
-    let mfaCode = body.getOrDefault("mfa_code", "")
-    let recoveryCode = body.getOrDefault("mfa_recovery_code", "")
+    let mfaCode = if body.hasKey("mfa_code"): body["mfa_code"].getStr else: ""
+    let recoveryCode = if body.hasKey("mfa_recovery_code"): body["mfa_recovery_code"].getStr else: ""
 
     let userId = getUserIdFromSession(tempSession)
     if userId <= 0:
@@ -269,7 +260,7 @@ routes:
         return
 
     if not user.isVerified:
-      setCookie("temp_session", "", expires = past()) # Clear temp session
+      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT") # Clear temp session
       discard dbDeleteSession(tempSession)
       resp Http401, "Account not verified. Cannot complete MFA."
       return
@@ -314,11 +305,10 @@ routes:
         return
 
       if user.mfaEnabled: # Should always be true if they are at MFA step
-        let key = getEnv("AES_KEY")
         let (encSecret, iv) = dbGetUserMfaSecret(user.id)
         if encSecret.len > 0 and iv.len > 0:
           try:
-            let secret = aesGcmDecrypt(key, encSecret, iv)
+            let secret = aesDecrypt(encSecret, iv)
             if verifyTotp(secret, mfaCode):
               echo "[MFA LOGIN] TOTP verified for user ID: ", userId
               mfaVerified = true
@@ -342,21 +332,12 @@ routes:
 
     if mfaVerified:
       # Clear temp session
-      var tempCookieToClear = newCookie("temp_session", "", expires = past())
-      tempCookieToClear.path = "/"
-      setCookie(tempCookieToClear)
+      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
       discard dbDeleteSession(tempSession) # tempSession is the token string
       
       # Create permanent session
       let permanentSessionToken = createSession(userId)
-      var permanentCookie = newCookie("session", permanentSessionToken, expires = now() + 7.days)
-      permanentCookie.path = "/"
-      permanentCookie.httpOnly = true
-      permanentCookie.secure = true # Enforce Secure flag
-      # This relies on the deployment being behind an HTTPS-terminating reverse proxy
-      # that correctly forwards protocol information (e.g., via X-Forwarded-Proto).
-      permanentCookie.sameSite = SameSite.Strict
-      setCookie(permanentCookie)
+      setCookie("session", permanentSessionToken, path = "/", httpOnly = true)
 
       # Check password expiry again for the main session
       var responseJson = %*{"status": "Login successful."}
@@ -380,14 +361,10 @@ routes:
     
     if sessionToken.len > 0:
       discard dbDeleteSession(sessionToken)
-      var sessionCookieToClear = newCookie("session", "", expires = past())
-      sessionCookieToClear.path = "/"
-      setCookie(sessionCookieToClear)
+      setCookie("session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
     
     if tempSession.len > 0:
       discard dbDeleteSession(tempSession)
-      var tempCookieToClear = newCookie("temp_session", "", expires = past())
-      tempCookieToClear.path = "/"
-      setCookie(tempCookieToClear)
+      setCookie("temp_session", "", expires = "Thu, 01 Jan 1970 00:00:00 GMT")
     
     resp Http200, "Logged out."

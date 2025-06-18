@@ -4,6 +4,9 @@
 
 import jester, os
 
+# hCaptcha configuration
+const HCaptchaSiteverifyURL* = "https://hcaptcha.com/siteverify"
+
 proc getSecret*(key: string, default = ""): string =
     result = getEnv(key, default)
     if result == "":

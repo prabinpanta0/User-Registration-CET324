@@ -3,7 +3,7 @@ import os
 
 proc isPasswordPwned*(password: string): Future[bool] {.async.} =
   # Calculate SHA-1 hash of the password
-  let hash = $sha1.secureHash(password).toHex.toUpper()
+  let hash = ($sha1.secureHash(password)).toUpper()
   let prefix = hash[0..4]
   let suffix = hash[5..^1]
 
@@ -12,14 +12,15 @@ proc isPasswordPwned*(password: string): Future[bool] {.async.} =
   var client = newAsyncHttpClient()
   client.headers = newHttpHeaders({"User-Agent": "NimHIBPChecker/1.0"})
   # Set a timeout for the request
-  client.timeout = 5.seconds # Or use: client.timeout = 5000
+  client.timeout = 5000 # 5 seconds in milliseconds
 
   try:
     echo "Checking HIBP for prefix: ", prefix
     let response = await client.get(url)
 
     if response.code == Http200:
-      let lines = response.body.splitLines()
+      let responseBody = await response.body()
+      let lines = responseBody.splitLines()
       for line in lines:
         let parts = line.split(':')
         if parts.len == 2 and parts[0] == suffix:

@@ -90,23 +90,6 @@ routes:
       return
 
     # CSRF Check (session-bound)
-    # Note: /sessions/list is a POST currently but might be better as GET if it's just fetching data.
-    # If it remains POST and modifies/logs something sensitive, CSRF is good.
-    # For now, applying CSRF as it's a POST.
-    if not verifyCsrf(request): # Assuming /sessions/list might have side-effects or is sensitive
-      resp Http403, "CSRF token validation failed."
-      return
-
-    let sessions = listSessionsForUser(user.id)
-    resp Http200, %*sessions
-
-  post "/sessions/terminate":
-    let user = getCurrentUser(request)
-    if user.id == 0:
-      resp Http401, "Not authenticated."
-      return
-
-    # CSRF Check (session-bound)
     if not verifyCsrf(request):
       resp Http403, "CSRF token validation failed."
       return
