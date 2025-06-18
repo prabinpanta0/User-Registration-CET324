@@ -30,3 +30,16 @@ proc getHCaptchaSecretKey*(): string =
   result = getEnv("HCAPTCHA_SECRET_KEY", "")
   if result.len == 0:
     echo "[WARN] HCAPTCHA_SECRET_KEY is not set in environment. Captcha verification will fail."
+
+proc getRecaptchaV3SecretKey*(): string =
+  result = getEnv("RECAPTCHA_V3_SECRET_KEY", "")
+  if result.len == 0:
+    echo "[WARN] RECAPTCHA_V3_SECRET_KEY is not set in environment. reCAPTCHA v3 verification will fail."
+
+proc getRecaptchaV3ScoreThreshold*(): float =
+  let thresholdStr = getEnv("RECAPTCHA_V3_SCORE_THRESHOLD", "0.5")
+  try:
+    result = parseFloat(thresholdStr)
+  except ValueError:
+    echo "[WARN] Invalid RECAPTCHA_V3_SCORE_THRESHOLD value. Using default 0.5"
+    result = 0.5

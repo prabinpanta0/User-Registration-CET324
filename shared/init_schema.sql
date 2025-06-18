@@ -1,4 +1,4 @@
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(32) NOT NULL UNIQUE,
     email VARCHAR(128) NOT NULL UNIQUE,
@@ -20,7 +20,7 @@ CREATE TABLE users (
     is_verified BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     session_token VARCHAR(128) NOT NULL UNIQUE,
@@ -29,10 +29,26 @@ CREATE TABLE sessions (
     csrf_token TEXT DEFAULT '' -- Store CSRF token associated with the session
 );
 
-CREATE TABLE blocked_ips (
+CREATE TABLE IF NOT EXISTS blocked_ips (
     ip_address TEXT PRIMARY KEY,
     blocked_until TIMESTAMP WITH TIME ZONE NOT NULL,
     reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS captcha_sessions (
+    session_id VARCHAR(128) PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    solution VARCHAR(10) NOT NULL,
+    expires_at BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS captcha_sessions (
+    session_id VARCHAR(128) PRIMARY KEY, 
+    ip_address TEXT NOT NULL, 
+    solution VARCHAR(10) NOT NULL, 
+    expires_at BIGINT NOT NULL, 
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 -- DEPRECATION AND REMOVAL STRATEGY FOR password_salt:

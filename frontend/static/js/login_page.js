@@ -10,23 +10,33 @@ document.addEventListener('DOMContentLoaded', function() {
   const toggleMfaInputLink = document.getElementById('toggleMfaInputLink');
   let usingRecoveryCode = false;
 
+  const captchaImg = document.getElementById('captchaImg');
+  const captchaErrorDiv = document.getElementById('captchaError');
   const csrfTokenInput = document.getElementById('csrfTokenInput');
   const mfaCsrfTokenInput = document.getElementById('mfaCsrfTokenInput');
   const submitBtn = document.getElementById('submitBtn'); // Login form submit button
 
+  function refreshCaptcha() {
+    if (captchaImg && captchaErrorDiv) {
+      captchaImg.classList.remove('hidden');
+      captchaErrorDiv.classList.add('hidden');
+      captchaImg.src = '/captcha?' + Date.now();
+    }
+  }
+
   function showMfaForm() {
     if (loginForm && mfaFormContainer) {
-    loginForm.classList.add('hidden'); // Assuming loginForm itself should be hidden by class
-    // loginForm.style.display = 'none'; // Old way
-    mfaFormContainer.classList.remove('hidden');
+      loginForm.classList.add('hidden'); // Assuming loginForm itself should be hidden by class
+      // loginForm.style.display = 'none'; // Old way
+      mfaFormContainer.classList.remove('hidden');
     }
   }
 
   function showLoginForm() {
     if (mfaFormContainer && loginForm) {
       mfaFormContainer.classList.add('hidden');
-    loginForm.classList.remove('hidden'); // Assuming loginForm should be shown by removing class
-    // loginForm.style.display = 'block'; // Old way
+      loginForm.classList.remove('hidden'); // Assuming loginForm should be shown by removing class
+      // loginForm.style.display = 'block'; // Old way
     }
   }
 
@@ -85,19 +95,17 @@ document.addEventListener('DOMContentLoaded', function() {
       alert('Registration successful! Please log in with your credentials.');
     }
     window.history.replaceState({}, document.title, window.location.pathname);
-  }
-
-  // Handle login form submission with AJAX
+  }  // Handle login form submission with AJAX
   if (loginForm) {
     loginForm.addEventListener('submit', function(e) {
       e.preventDefault();
       
-      // Get hCaptcha response
-      const hcaptchaResponse = window.hcaptcha ? window.hcaptcha.getResponse() : '';
-      if (!hcaptchaResponse) {
+      // Check if custom captcha is filled
+      const captchaInput = loginForm.querySelector('input[name="captcha"]');
+      if (!captchaInput || !captchaInput.value.trim()) {
         if (typeof Toastify === 'function') {
           Toastify({
-            text: 'Please complete the captcha verification.',
+            text: 'Please enter the captcha code.',
             duration: 3000,
             close: true,
             gravity: "top",
@@ -106,35 +114,50 @@ document.addEventListener('DOMContentLoaded', function() {
             stopOnFocus: true,
           }).showToast();
         } else {
-          alert('Please complete the captcha verification.');
+          alert('Please enter the captcha code.');
         }
         return;
       }
-      
-      const formData = new FormData(loginForm);
-      const data = {};
-      formData.forEach((v, k) => data[k] = v);
-      
-      // Add hCaptcha response
-      data['h-captcha-response'] = hcaptchaResponse;
 
       if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Logging in...';
       }
 
-      fetch('/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        credentials: 'include',
-        body: JSON.stringify(data)
-      }).then(async r => {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Login';
-        }
+      // Get reCAPTCHA v3 token
+      if (typeof grecaptcha !== 'undefined' && window.RECAPTCHA_SITE_KEY) {
+        grecaptcha.ready(function() {
+          grecaptcha.execute(window.RECAPTCHA_SITE_KEY, {action: 'login'}).then(function(token) {
+            submitLoginForm(token);
+          });
+        });
+      } else {
+        console.warn('reCAPTCHA v3 not loaded or site key not available, submitting without token');
+        submitLoginForm('');
+      }
+    });
+  }
 
-        if (r.ok) {
+  function submitLoginForm(recaptchaToken) {
+    const formData = new FormData(loginForm);
+    const data = {};
+    formData.forEach((v, k) => data[k] = v);
+    
+    // Add reCAPTCHA token
+    data.recaptcha_token = recaptchaToken;
+
+    fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'include',
+      body: JSON.stringify(data)
+    }).then(async r => {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Login';
+      }
+
+      if (r.ok) {
           const resultText = await r.text(); // Read as text first
           try {
             const resultJson = JSON.parse(resultText); // Try to parse as JSON
@@ -171,10 +194,8 @@ document.addEventListener('DOMContentLoaded', function() {
           } else {
             alert(msg || 'Login failed. Please try again.');
           }
-          // Reset hCaptcha widget
-          if (window.hcaptcha) {
-            window.hcaptcha.reset();
-          }
+          // Refresh custom captcha
+          refreshCaptcha();
         }
       }).catch(err => {
         if (submitBtn) {
@@ -194,7 +215,11 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
           alert('Network error. Please try again.');
         }
-        // Reset hCaptcha widget
+        // Refresh custom captcha
+        refreshCaptcha();
+        console.error('Login fetch error:', err);
+      });
+  }
         if (window.hcaptcha) {
           window.hcaptcha.reset();
         }

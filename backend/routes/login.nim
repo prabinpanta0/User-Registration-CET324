@@ -10,7 +10,8 @@ import ../utils/audit_log
 import ../utils/totp_utils
 import ../utils/mfa_recovery_utils # For hashRecoveryCode
 import ../utils/csrf_validator
-import ./register # For verifyCaptcha function
+import ../utils/recaptcha_v3 # For reCAPTCHA v3 verification
+import ./captcha # For custom captcha verification
 
 # Rate Limiting Configurations
 const loginAttemptConfig = RateLimitConfig(
@@ -27,8 +28,22 @@ const mfaVerifyConfig = RateLimitConfig(
   blockDurationSecLongTerm: 1800 # 30 minutes DB block
 )
 
-# Import verifyCaptcha from register.nim - now using HCaptcha
-# proc verifyCaptcha is imported from register module
+# Dual captcha verification: reCAPTCHA v3 + custom SVG captcha
+proc verifyDualCaptcha(recaptchaToken: string, customCaptcha: string, captchaSession: string, ip: string): Future[bool] {.async.} =
+  # First verify reCAPTCHA v3 (background protection)
+  let recaptchaVerified = await verifyRecaptchaV3(recaptchaToken, ip)
+  if not recaptchaVerified:
+    echo "[INFO] reCAPTCHA v3 verification failed for IP: ", ip
+    return false
+  
+  # Then verify custom SVG captcha (user interaction)
+  let customCaptchaVerified = verifyCaptchaSession(captchaSession, ip, customCaptcha)
+  if not customCaptchaVerified:
+    echo "[INFO] Custom captcha verification failed for IP: ", ip
+    return false
+  
+  echo "[INFO] Both reCAPTCHA v3 and custom captcha verified successfully for IP: ", ip
+  return true
 
 # Check if user has MFA enabled
 proc userHasMfa(userId: int64): bool =
@@ -98,13 +113,16 @@ routes:
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
     let password = body["password"].getStr
-    let hcaptchaResponse = if body.hasKey("h-captcha-response"): body["h-captcha-response"].getStr else: ""
+    let recaptchaToken = if body.hasKey("recaptcha_token"): body["recaptcha_token"].getStr else: ""
+    let customCaptcha = if body.hasKey("captcha"): body["captcha"].getStr else: ""
+    let captchaSession = if request.cookies.hasKey("captcha_session"): request.cookies["captcha_session"] else: ""
+    
     echo "[DEBUG] Login attempt - user: ", userOrEmail, " password length: ", password.len
 
-    # Verify HCaptcha
-    let captchaVerified = await verifyCaptcha(hcaptchaResponse, ip)
+    # Verify dual captcha (reCAPTCHA v3 + custom SVG)
+    let captchaVerified = await verifyDualCaptcha(recaptchaToken, customCaptcha, captchaSession, ip)
     if not captchaVerified:
-      echo "[INFO] HCaptcha verification failed for login attempt from IP: ", ip
+      echo "[INFO] Dual captcha verification failed for login attempt from IP: ", ip
       resp Http400, "Invalid captcha verification."
       return
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Register - My Lapis App</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+  <script src="https://www.google.com/recaptcha/api.js?render=<%= recaptcha_site_key %>"></script>
 </head>
 <body class="bg-gray-50 font-sans leading-normal tracking-normal"> <!-- bg-gray-100 to bg-gray-50 -->
   <div class="container mx-auto p-4">
@@ -41,9 +41,12 @@
     </div>
     <div class="mb-6"> <!-- mb-4 to mb-6 -->
       <label class="block mb-1 font-semibold text-gray-700">Captcha</label>
-      <!-- hCaptcha widget will be placed here -->
-      <div class="h-captcha" data-sitekey="<%= hcaptcha_site_key %>"></div>
-      <!-- Ensure hcaptcha_site_key is passed from the Lua view context -->
+      <div class="flex items-center mb-2 gap-x-3">
+        <img id="captchaImg" src="/captcha" alt="Captcha" class="h-12 border border-gray-300 rounded bg-gray-50" onerror="this.classList.add('hidden'); document.getElementById('captchaError').classList.remove('hidden');" />
+        <button type="button" id="refreshCaptchaBtn" class="text-sm text-blue-600 hover:text-blue-800 underline">Refresh</button>
+      </div>
+      <div id="captchaError" class="text-red-500 text-sm mb-2 hidden">Captcha image failed to load. Please refresh the page.</div>
+      <input name="captcha" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required maxlength="6" placeholder="Enter captcha code" />
     </div>
     <input type="text" name="website" class="hidden" autocomplete="off" tabindex="-1" /> <!-- Honeypot -->
     <input type="hidden" name="csrf_token" id="csrfTokenInput" />
