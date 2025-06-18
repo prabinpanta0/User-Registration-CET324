@@ -43,14 +43,6 @@ CREATE TABLE IF NOT EXISTS captcha_sessions (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS captcha_sessions (
-    session_id VARCHAR(128) PRIMARY KEY, 
-    ip_address TEXT NOT NULL, 
-    solution VARCHAR(10) NOT NULL, 
-    expires_at BIGINT NOT NULL, 
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
 -- DEPRECATION AND REMOVAL STRATEGY FOR password_salt:
 --
 -- The `password_salt` column in the `users` table is deprecated as of [Date of Change - e.g., YYYY-MM-DD].
