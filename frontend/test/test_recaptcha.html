@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>reCAPTCHA v3 Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .test-container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 3px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        
+        /* Ensure reCAPTCHA badge is visible */
+        .grecaptcha-badge {
+            visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 999999 !important;
+            bottom: 14px !important;
+            right: 14px !important;
+        }
+    </style>
+    <script src="https://www.google.com/recaptcha/api.js?render=6LeJn2QrAAAAAA3Oqy2g9g8598I_iHPkvardhFlE"></script>
+</head>
+<body>
+    <h1>reCAPTCHA v3 Test</h1>
+    
+    <div class="test-container">
+        <h2>Test 1: Script Loading</h2>
+        <p>Checking if reCAPTCHA v3 script loaded successfully...</p>
+        <div id="script-test" class="result info">Testing...</div>
+    </div>
+    
+    <div class="test-container">
+        <h2>Test 2: reCAPTCHA Execution</h2>
+        <p>Testing if reCAPTCHA can execute and get a token...</p>
+        <button id="test-recaptcha" onclick="testRecaptcha()">Test reCAPTCHA</button>
+        <div id="recaptcha-test" class="result info">Click button to test</div>
+    </div>
+    
+    <div class="test-container">
+        <h2>Test 3: Badge Visibility</h2>
+        <p>The reCAPTCHA badge should be visible in the bottom-right corner of the page.</p>
+        <div id="badge-test" class="result info">Check bottom-right corner for reCAPTCHA badge</div>
+    </div>
+
+    <script>
+        // Test 1: Check if script loaded
+        setTimeout(function() {
+            const scriptTest = document.getElementById('script-test');
+            if (typeof grecaptcha !== 'undefined') {
+                scriptTest.textContent = '✓ reCAPTCHA script loaded successfully';
+                scriptTest.className = 'result success';
+            } else {
+                scriptTest.textContent = '✗ reCAPTCHA script failed to load';
+                scriptTest.className = 'result error';
+            }
+        }, 1000);
+
+        // Test 2: Test reCAPTCHA execution
+        function testRecaptcha() {
+            const testDiv = document.getElementById('recaptcha-test');
+            testDiv.textContent = 'Testing...';
+            testDiv.className = 'result info';
+            
+            if (typeof grecaptcha === 'undefined') {
+                testDiv.textContent = '✗ reCAPTCHA not available';
+                testDiv.className = 'result error';
+                return;
+            }
+            
+            grecaptcha.ready(function() {
+                grecaptcha.execute('6LeJn2QrAAAAAA3Oqy2g9g8598I_iHPkvardhFlE', {action: 'test'})
+                    .then(function(token) {
+                        testDiv.textContent = '✓ reCAPTCHA token generated successfully. Token: ' + token.substring(0, 50) + '...';
+                        testDiv.className = 'result success';
+                        
+                        // Also check if badge is visible
+                        setTimeout(checkBadgeVisibility, 500);
+                    })
+                    .catch(function(error) {
+                        testDiv.textContent = '✗ reCAPTCHA execution failed: ' + error;
+                        testDiv.className = 'result error';
+                    });
+            });
+        }
+        
+        // Test 3: Check badge visibility
+        function checkBadgeVisibility() {
+            const badgeTest = document.getElementById('badge-test');
+            const badge = document.querySelector('.grecaptcha-badge');
+            
+            if (badge) {
+                const styles = window.getComputedStyle(badge);
+                const isVisible = styles.display !== 'none' && 
+                                styles.visibility !== 'hidden' && 
+                                styles.opacity !== '0';
+                
+                if (isVisible) {
+                    badgeTest.textContent = '✓ reCAPTCHA badge is visible';
+                    badgeTest.className = 'result success';
+                } else {
+                    badgeTest.textContent = '⚠ reCAPTCHA badge exists but may be hidden (display: ' + styles.display + ', visibility: ' + styles.visibility + ', opacity: ' + styles.opacity + ')';
+                    badgeTest.className = 'result error';
+                }
+            } else {
+                badgeTest.textContent = '✗ reCAPTCHA badge not found in DOM';
+                badgeTest.className = 'result error';
+            }
+        }
+        
+        // Auto-test reCAPTCHA on page load
+        setTimeout(function() {
+            if (typeof grecaptcha !== 'undefined') {
+                testRecaptcha();
+            }
+        }, 2000);
+    </script>
+</body>
+</html>

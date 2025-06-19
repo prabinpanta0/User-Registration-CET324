@@ -236,6 +236,13 @@ routes:
       let sessionTokenValue = createSession(user.id)
       # Create session cookie using simplified approach
       setCookie("session", sessionTokenValue, path = "/", httpOnly = true)
+      
+      # Check if user needs to set up MFA (new users should set up MFA)
+      if not user.mfaEnabled:
+        responseJson["redirect"] = newJString("/mfa/setup")
+      else:
+        responseJson["redirect"] = newJString("/dashboard")
+      
       resp Http200, $responseJson
 
   post "/login/mfa":
@@ -369,6 +376,8 @@ routes:
         except ValueError:
           echo "[WARN] Could not parse passwordLastChanged for user ", user.id, " during MFA: ", user.passwordLastChanged
 
+      # Always redirect to dashboard after successful MFA verification
+      responseJson["redirect"] = newJString("/dashboard")
       resp Http200, $responseJson
     else:
       resp Http401, "Invalid session."

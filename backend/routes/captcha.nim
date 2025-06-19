@@ -1,4 +1,4 @@
-import random, strutils, sequtils, jester, base64, times, nimcrypto/sha
+import random, strutils, sequtils, jester, base64, times, nimcrypto/sha2
 import ../db/db
 import ../utils/audit_log
 

@@ -1,10 +1,11 @@
-import jester, json, options, times
+import jester, json, options, times, random, strutils
 import ../db/db
 import ../utils/jwt_utils
 import ../utils/email_sender # For sending emails and getBaseUrl
 import ../utils/csrf_validator # Import CSRF validator
 import ../crypto/password   # For hashPassword, generateSalt
 import ../utils/hibp        # For isPasswordPwned
+import ../routes/login import createSession # Import createSession function
 # Assuming validPassword from register.nim is needed, or similar logic here.
 # For now, let's use a direct import if register.nim is small or create a shared util.
 # To avoid circular deps if register imports this file, better to have password validation as a shared util.
@@ -58,11 +59,24 @@ routes:
         return
 
     if user.isVerified:
-        resp Http200, "Email already verified. You can log in."
+        resp Http200, %*{"status": "already_verified", "redirect": "/login", "message": "Email already verified. You can log in."}
         return
 
     if dbSetUserVerified(userId):
-      resp Http200, "Email verified successfully. You can now log in."
+      # Create a session for the newly verified user
+      let sessionToken = createSession(userId)
+      # Set cookie with explicit settings for proxy compatibility
+      var sessionCookie = newCookie("session", sessionToken)
+      sessionCookie.path = "/"
+      sessionCookie.httpOnly = true
+      sessionCookie.sameSite = SameSite.Lax  # More permissive for cross-domain
+      # Don't set domain to allow it to work across proxy
+      setCookie(sessionCookie)
+      
+      echo "[DEBUG] Session cookie set for user ", userId, " token: ", sessionToken[0..10], "..."
+      
+      # Redirect to MFA setup since new users need to set up MFA
+      resp Http200, %*{"status": "verified", "redirect": "/mfa/setup", "message": "Email verified successfully. Setting up MFA..."}
     else:
       # Log this server-side, as it's an internal issue if token was valid but DB update failed.
       echo "[ERROR] Failed to set user as verified in DB for user ID: ", userId
@@ -194,5 +208,71 @@ routes:
     else:
       # This could be due to history check in dbUpdateUserPassword or other DB error
       resp Http400, "Failed to reset password. The new password may have been used previously, or a server error occurred."
+
+  post "/verify-email-code":
+    # This is for code-based verification, using CSRF protection for pre-session
+    if not verifyCsrf(request, isPreSession = true):
+      resp Http403, "CSRF token validation failed."
+      return
+
+    # Clear the CSRF cookie after successful use
+    var csrfCookieToClear = newCookie("csrf_token_value", "", expires = past())
+    csrfCookieToClear.path = "/"
+    csrfCookieToClear.sameSite = SameSite.Strict
+    setCookie(csrfCookieToClear)
+
+    let code = request.params.get("code", "")
+    if code.len != 6:
+      resp Http400, "Invalid verification code format. Code must be 6 digits."
+      return
+
+    # Validate that code contains only digits
+    for c in code:
+      if not c.isDigit:
+        resp Http400, "Invalid verification code format. Code must contain only digits."
+        return
+
+    ensureDbConnection()
+
+    # Find user by verification code (we need to modify this approach)
+    # Since we don't have user_id in the request, we need to find the user by the code
+    # Let's create a function to get user by verification code
+    let userIdOpt = dbGetUserIdByVerificationCode(code)
+    if userIdOpt.isNone():
+      resp Http400, "Invalid or expired verification code."
+      return
+
+    let userId = userIdOpt.get()
+    let user = dbGetUserById(userId)
+    if user.id == 0:
+      resp Http400, "User not found."
+      return
+
+    if user.isVerified:
+      resp Http400, %*{"status": "already_verified", "redirect": "/login", "message": "Email is already verified."}
+      return
+
+    # Verify the code and mark as used
+    if dbVerifyEmailCode(userId, code):
+      # Set user as verified
+      if dbSetUserVerified(userId):
+        # Create a session for the newly verified user
+        let sessionToken = createSession(userId)
+        # Set cookie with explicit settings for compatibility
+        var sessionCookie = newCookie("session", sessionToken)
+        sessionCookie.path = "/"
+        sessionCookie.httpOnly = true
+        sessionCookie.sameSite = SameSite.Lax  # More permissive for cross-domain
+        setCookie(sessionCookie)
+        
+        echo "[DEBUG] Session cookie set for user ", userId, " token: ", sessionToken[0..10], "..."
+        
+        # Redirect to MFA setup since new users need to set up MFA
+        resp Http200, %*{"status": "verified", "redirect": "/mfa/setup", "message": "Email verified successfully. Setting up MFA..."}
+      else:
+        echo "[ERROR] Failed to set user as verified after code validation for user ID: ", userId
+        resp Http500, "Failed to complete verification. Please try again."
+    else:
+      resp Http400, "Invalid or expired verification code."
 
   # discard routes # No longer needed if all routes are used.

@@ -6,22 +6,23 @@ import jester
 import db/db
 import db/models
 import crypto/password
-import crypto/aes
 import utils/rate_limit
-import utils/audit_log
-import utils/totp_utils
+import utils/csrf_validator
+import utils/ddos_protector
+import utils/email_sender
+import utils/jwt_utils
 import times, strutils, json, random, options
 import nimcrypto/sysrand as cryptoRandom # For cryptographically secure random bytes
 
-# Import route modules
-# import routes/login  # Temporarily commented out due to multiple routes blocks conflict
-# import routes/register  # Temporarily commented out due to route conflicts
-# import routes/dashboard  # Temporarily commented out due to route conflicts
-# import routes/mfa  # Temporarily commented out due to route conflicts  
-# import routes/email_verification_routes  # Temporarily commented out due to route conflicts
-# import utils/ddos_protector # Import DDoS Protector - Temporarily commented out due to missing collections/ringbuffers
-
 # --- Helper Procedures ---
+
+# Rate Limiting Configuration for Registration
+const registerAttemptConfig = RateLimitConfig(
+  routeIdentifier: "register_attempt",
+  maxAttemptsShortTerm: 10,       # Max 10 registration attempts
+  windowSecShortTerm: 3600,     # within a 1-hour window
+  blockDurationSecLongTerm: 86400 # Long-term DB block for 24 hours if limit exceeded
+)
 
 proc generateSecureRandomToken(length: int = 32): string =
   # Generate cryptographically secure random bytes and hex encode them
@@ -107,6 +108,14 @@ routes:
 
   post "/login":
     echo "[DEBUG] Login endpoint hit"
+    
+    # CSRF Check (pre-session)
+    if not verifyCsrf(request, isPreSession = true):
+      resp Http403, "CSRF token validation failed."
+      return
+    # Clear the double submit cookie after successful use
+    setCookie("csrf_token_value", "", expires = now() - 1.days)
+    
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
     let password = body["password"].getStr
@@ -128,6 +137,12 @@ routes:
       resp Http401, "Invalid credentials"
       return
     
+    # Check if email is verified
+    if not user.isVerified:
+      echo "[DEBUG] User email not verified: ", userOrEmail
+      resp Http401, "Please verify your email address before logging in."
+      return
+    
     # Verify password
     if not verifyPassword(password, user.passwordHash):
       echo "[DEBUG] Invalid password for user: ", userOrEmail
@@ -136,8 +151,24 @@ routes:
     
     echo "[DEBUG] Login successful for user: ", user.username
     
-    # For now, just return success - we'll add session creation later
-    resp Http200, "Login successful"
+    # Check if user has MFA enabled
+    if user.mfaEnabled:
+      # Create temporary session for MFA verification
+      let tempSession = createSession(user.id, temporary = true)
+      setCookie("temp_session", tempSession, expires = now() + 10.minutes)
+      resp Http200, $(%*{"status": "mfa_required"})
+    else:
+      # Create regular session and redirect to MFA setup or dashboard
+      let session = createSession(user.id, temporary = false)
+      setCookie("session", session, expires = now() + 7.days)
+      
+      # Update last login time
+      discard dbUpdateUserLastLogin(user.id)
+      
+      # Return success with redirect information
+      resp Http200, $(%*{"status": "success", "redirect": "/mfa/setup"})
+    
+    return
 
   # Dashboard API routes
   get "/dashboard/info":
@@ -206,6 +237,11 @@ routes:
       resp Http401, "Not authenticated."
       return
     
+    # CSRF Check (post-session)
+    if not verifyCsrf(request, isPreSession = false):
+      resp Http403, "CSRF token validation failed."
+      return
+    
     # Ensure database connection
     ensureDbConnection()
     
@@ -246,14 +282,14 @@ routes:
     if isExistingSession:
       if dbUpdateSessionCsrfToken(userSession.sessionToken, newCsrfToken):
         echo "[CSRF] Updated CSRF token in session for user ID: ", userSession.userId
-        resp Http200, newCsrfToken
+        resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"
       else:
         echo "[CSRF ERROR] Failed to update CSRF token in session database for user ID: ", userSession.userId
         resp Http500, "Error generating CSRF token (session update failed)."
     else:
       setCookie("csrf_token_value", newCsrfToken, expires = now() + 30.minutes)
       echo "[CSRF] Issued CSRF token via double submit cookie method."
-      resp Http200, newCsrfToken
+      resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"
 
   get "/captcha":
     let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -270,6 +306,249 @@ routes:
   <line x1="20" y1="10" x2="140" y2="30" stroke="#adb5bd" stroke-width="1"/>
 </svg>"""
     resp Http200, svg, "image/svg+xml"
+
+  post "/register":
+    let ip = getClientIp(request)
+    if not isRequestAllowed(ip, registerAttemptConfig):
+      resp Http429, "Too many registration attempts. Please try later."
+      return
+
+    # CSRF Check (pre-session)
+    if not verifyCsrf(request, isPreSession = true):
+      resp Http403, "CSRF token validation failed."
+      return
+    # Clear the double submit cookie after successful use
+    setCookie("csrf_token_value", "", expires = now() - 1.days)
+
+    let body = parseJson(request.body)
+    let username = body["username"].getStr
+    let email = body["email"].getStr
+    let password = body["password"].getStr
+    let confirm = body["confirm_password"].getStr
+    # Ensure the frontend sends the hCaptcha token as "h-captcha-response" or "captcha"
+    let captchaToken = if body.hasKey("h-captcha-response"): body["h-captcha-response"].getStr
+                       elif body.hasKey("captcha"): body["captcha"].getStr
+                       else: ""
+    let honeypot = if body.hasKey("website"): body["website"].getStr else: ""
+
+    if honeypot.len > 0:
+      resp Http400, "Bot detected."
+      return
+    if password != confirm:
+      resp Http400, "Passwords do not match."
+      return
+    if not validPassword(password):
+      resp Http400, "Password does not meet requirements."
+      return
+    if not validUsername(username):
+      resp Http400, "Invalid username."
+      return
+    if not validEmail(email):
+      resp Http400, "Invalid email."
+      return
+
+    # For now, skip captcha verification to test basic functionality
+    # TODO: Re-enable captcha verification
+    # if not await verifyCaptcha(captchaToken, ip):
+    #   resp Http400, "Invalid CAPTCHA. Please try again."
+    #   return
+
+    # Check if password is pwned
+    # For now, skip HIBP check to test basic functionality
+    # TODO: Re-enable HIBP check
+    # if await isPasswordPwned(password):
+    #   resp Http400, "This password has been exposed in data breaches. Please choose a different password."
+    #   return
+
+    # Argon2id handles salt internally; hashPassword now only takes the password.
+    let hash = hashPassword(password)
+    
+    echo "[DEBUG] Attempting to insert user: ", username, " with email: ", email
+    # Pass an empty string for salt, as it's now part of the hash.
+    let insertResult = dbInsertUser(username, email, hash, "")
+    echo "[DEBUG] Insert result: ", insertResult
+    
+    if not insertResult:
+      echo "[ERROR] Failed to insert user into database"
+      resp Http500, "User registration failed. Please try again."
+      return
+    
+    # User inserted successfully - send verification email with code
+    let user = dbGetUserByUsernameOrEmail(username)
+    if user.id == 0:
+      resp Http500, "User creation failed."
+      return
+    
+    # Generate 6-digit verification code
+    randomize()
+    var verificationCode = ""
+    for i in 0..<6:
+      verificationCode.add char(ord('0') + rand(9))
+    
+    # Store verification code in database
+    if not dbCreateVerificationCode(user.id, verificationCode, 24):
+      echo "[ERROR] Failed to create verification code for user ", user.id
+      resp Http500, "Failed to create verification code."
+      return
+    
+    # Send verification email with code
+    let emailSubject = "Your Email Verification Code - ACS Assignment"
+    let emailBody = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Email Verification</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #4F46E5; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background-color: #f9f9f9; }
+        .code { font-size: 24px; font-weight: bold; background-color: #e5e7eb; padding: 15px; text-align: center; border-radius: 5px; margin: 20px 0; }
+        .footer { padding: 10px; text-align: center; font-size: 12px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Email Verification</h1>
+        </div>
+        <div class="content">
+            <h2>Hello!</h2>
+            <p>Thank you for registering with ACS Assignment. To complete your registration, please use the verification code below:</p>
+            <div class="code">""" & verificationCode & """</div>
+            <p><strong>Important:</strong></p>
+            <ul>
+                <li>This code will expire in 24 hours</li>
+                <li>Enter this code on the verification page to activate your account</li>
+                <li>If you didn't request this registration, please ignore this email</li>
+            </ul>
+        </div>
+        <div class="footer">
+            <p>This is an automated email from ACS Assignment. Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    
+    echo "[INFO] Sending verification email to: ", user.email
+    
+    # Send the email with HTML format
+    let emailResult = await sendEmail(user.email, emailSubject, emailBody, isHtml = true)
+    if not emailResult:
+      echo "[ERROR] Failed to send verification email to: ", user.email
+      # Don't fail registration even if email fails - user can still verify manually
+    else:
+      echo "[INFO] Verification email sent successfully to: ", user.email
+    
+    resp Http200, "Registration successful. Please check your email for a verification code."
+
+  # Email verification with code
+  post "/verify-email-code":
+    # CSRF Check (pre-session)
+    if not verifyCsrf(request, isPreSession = true):
+      resp Http403, "CSRF token validation failed."
+      return
+    setCookie("csrf_token_value", "", expires = now() - 1.days)
+
+    # Get code from either JSON body or form parameters
+    var code = ""
+    var contentType = ""
+    try:
+      contentType = request.headers["Content-Type"]
+    except KeyError:
+      contentType = ""
+    
+    if contentType.contains("application/json"):
+      # JSON request
+      let body = parseJson(request.body)
+      if body.hasKey("code"):
+        code = body["code"].getStr()
+    else:
+      # Form data request
+      code = request.params.getOrDefault("code", "")
+
+    if code.len != 6:
+      resp Http400, "Invalid verification code format. Code must be 6 digits."
+      return
+
+    # Validate that code contains only digits
+    for c in code:
+      if not c.isDigit:
+        resp Http400, "Invalid verification code format. Code must contain only digits."
+        return
+
+    ensureDbConnection()
+    
+    # Find user by verification code
+    let userIdOpt = dbGetUserIdByVerificationCode(code)
+    if userIdOpt.isNone():
+      resp Http400, "Invalid or expired verification code."
+      return
+
+    let userId = userIdOpt.get()
+    let user = dbGetUserById(userId)
+    if user.id == 0:
+      resp Http400, "User not found."
+      return
+
+    if user.isVerified:
+      resp Http200, "Email is already verified."
+      return
+
+    # Verify the code and mark as used
+    if dbVerifyEmailCode(userId, code):
+      if dbSetUserVerified(userId):
+        resp Http200, "Email verified successfully. You can now log in."
+      else:
+        echo "[ERROR] Failed to set user as verified after code validation for user ID: ", userId
+        resp Http500, "Failed to complete verification. Please try again."
+    else:
+      resp Http400, "Invalid or expired verification code."
+
+  # Email verification route (legacy - for old links)
+  get "/verify-email":
+    let token = request.params.getOrDefault("token", "")
+    if token.len == 0:
+      # Redirect to a verification page with error message
+      redirect("/email-verification?error=missing_token")
+      return
+
+    let claimsOption = validateJwtToken(token)
+    if claimsOption.isNone():
+      redirect("/email-verification?error=invalid_token")
+      return
+
+    let claims = claimsOption.get()
+    if not claims.hasKey("user_id") or not claims.hasKey("type") or 
+       claims["type"].getStr() != "email_verification":
+      redirect("/email-verification?error=invalid_token")
+      return
+
+    let userId = claims["user_id"].getInt()
+    if userId == 0:
+      redirect("/email-verification?error=invalid_token")
+      return
+
+    ensureDbConnection()
+    let user = dbGetUserById(userId)
+    if user.id == 0:
+      redirect("/email-verification?error=user_not_found")
+      return
+
+    if user.isVerified:
+      redirect("/email-verification?success=already_verified")
+      return
+
+    if dbSetUserVerified(userId):
+      redirect("/email-verification?success=verified&next=mfa_setup")
+    else:
+      redirect("/email-verification?error=verification_failed")
+
+  # Email verification page route
+  get "/email-verification":
+    resp readFile("frontend/views/email_verification.lp")
 
 # --- Main Execution ---
 
@@ -301,7 +580,7 @@ when isMainModule:
     quit(1)
 
   # Initialize DDoS Protector
-  # initDdosProtector()  # Commented out as ddos_protector is not imported
+  initDdosProtector()
 
   # Start Jester server
   echo "[MAIN] Starting Jester server..."

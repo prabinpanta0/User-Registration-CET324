@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS captcha_sessions (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS email_verification_codes (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    verification_code VARCHAR(6) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    is_used BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 -- DEPRECATION AND REMOVAL STRATEGY FOR password_salt:
 --
 -- The `password_salt` column in the `users` table is deprecated as of [Date of Change - e.g., YYYY-MM-DD].

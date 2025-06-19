@@ -10,9 +10,11 @@ local Register = html.Widget:extend("Register", {
       print("[WARN] RECAPTCHA_V3_SITE_KEY is not set. reCAPTCHA v3 will not work.")
     end
 
-    return html.render("register.lp", self, {
-      recaptcha_site_key = recaptcha_site_key,
-      csrf_token = self.csrf_token
+    -- Set the recaptcha_site_key as a property of self so it's available in the template
+    self.recaptcha_site_key = recaptcha_site_key
+    
+    return self:_render_lp("views/register.lp", {
+      recaptcha_site_key = recaptcha_site_key
     })
   end
 })

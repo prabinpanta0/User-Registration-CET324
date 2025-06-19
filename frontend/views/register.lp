@@ -4,10 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Register - My Lapis App</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+  <link rel="stylesheet" href="/static/tailwind.css">
   <script src="https://www.google.com/recaptcha/api.js?render=<%= recaptcha_site_key %>"></script>
 </head>
-<body class="bg-gray-50 font-sans leading-normal tracking-normal"> <!-- bg-gray-100 to bg-gray-50 -->
+<body class="bg-gray-50 font-sans leading-normal tracking-normal" data-recaptcha-site-key="<%= recaptcha_site_key %>"> <!-- bg-gray-100 to bg-gray-50 -->
   <div class="container mx-auto p-4">
     <div class="max-w-md mx-auto mt-16 bg-white p-10 rounded shadow"> <!-- mt-10 to mt-16, p-8 to p-10 -->
   <h2 class="text-3xl font-bold mb-6 text-center">Register</h2> <!-- text-2xl to text-3xl -->
@@ -52,6 +55,13 @@
     <input type="hidden" name="csrf_token" id="csrfTokenInput" />
     <button id="submitBtn" type="submit" class="w-full bg-green-600 text-white py-3 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-200" disabled>Register</button> <!-- py-2 to py-3 -->
   </form>
+  
+  <!-- reCAPTCHA notice -->
+  <div class="recaptcha-info mt-4">
+    This site is protected by reCAPTCHA and the Google 
+    <a href="https://policies.google.com/privacy" target="_blank">Privacy Policy</a> and 
+    <a href="https://policies.google.com/terms" target="_blank">Terms of Service</a> apply.
+  </div>
 
   <!-- Navigation Links -->
   <div class="mt-6 text-center">
@@ -62,6 +72,7 @@
 </div>
 
 <script src="/static/password_strength.js"></script>
+<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
 <script src="/static/js/register_page.js" defer></script>
   </div>
 </body>

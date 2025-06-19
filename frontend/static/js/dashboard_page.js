@@ -126,23 +126,39 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function revokeSession(sessionId) {
-    fetch(`/dashboard/sessions/${sessionId}/revoke`, {
-      method: 'POST',
-      credentials: 'include'
-    })
-    .then(r => {
-      if (!r.ok) {
-        throw new Error('Failed to revoke session: ' + r.status);
-      }
-      return r.text();
-    })
-    .then(() => {
-      loadSessions(); // Reload the list
+    // Get CSRF token first, then make the request
+    fetch('/csrf-token', {credentials: 'include'})
+      .then(r => r.text())
+      .then(csrfToken => {
+        return fetch(`/dashboard/sessions/${sessionId}/revoke`, {
+          method: 'POST',
+          headers: {
+            'X-CSRF-Token': csrfToken
+          },
+          credentials: 'include'
+        });
+      })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error('Failed to revoke session: ' + r.status);
+        }
+        return r.text();
+      })
+      .then(() => {
+        loadSessions(); // Reload the list
     })
     .catch(err => {
       console.error('Failed to revoke session:', err);
       if (typeof Toastify === 'function') {
-        Toastify({ text: 'Failed to revoke session', duration: 3000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+        Toastify({ 
+          text: 'Failed to revoke session', 
+          duration: 3000, 
+          style: {
+            background: "white",
+            color: "black",
+            border: "1px solid #ccc"
+          }
+        }).showToast();
       } else {
         alert('Failed to revoke session');
       }
@@ -242,7 +258,15 @@ document.addEventListener('DOMContentLoaded', function() {
         .catch(err => {
           console.error('Error regenerating recovery codes:', err);
           if (typeof Toastify === 'function') {
-            Toastify({ text: 'Error: ' + err.message, duration: 3000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+            Toastify({ 
+              text: 'Error: ' + err.message, 
+              duration: 3000, 
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              }
+            }).showToast();
           } else {
             alert('Error: ' + err.message);
           }
@@ -259,7 +283,15 @@ document.addEventListener('DOMContentLoaded', function() {
           else alert('Codes copied!');
         }).catch(err => {
           console.error('Failed to copy new codes:', err);
-          if (typeof Toastify === 'function') Toastify({ text: 'Failed to copy.', duration: 2000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+          if (typeof Toastify === 'function') Toastify({ 
+            text: 'Failed to copy.', 
+            duration: 2000, 
+            style: {
+              background: "white",
+              color: "black",
+              border: "1px solid #ccc"
+            }
+          }).showToast();
           else alert('Failed to copy.');
         });
       }

@@ -1,4 +1,9 @@
 document.addEventListener('DOMContentLoaded', function() {
+  // Get reCAPTCHA site key from global variable or body data attribute as fallback
+  if (!window.RECAPTCHA_SITE_KEY) {
+    window.RECAPTCHA_SITE_KEY = document.body.getAttribute('data-recaptcha-site-key');
+  }
+  
   const loginForm = document.getElementById('loginForm');
   const mfaFormContainer = document.getElementById('mfaForm'); // Renamed for clarity
   const mfaVerifyForm = document.getElementById('mfaVerifyForm');
@@ -88,14 +93,20 @@ document.addEventListener('DOMContentLoaded', function() {
         close: true,
         gravity: "top",
         position: "right",
-        backgroundColor: "linear-gradient(to right, #00b09b, #96c93d)",
+        style: {
+          background: "white",
+          color: "black",
+          border: "1px solid #ccc"
+        },
         stopOnFocus: true,
       }).showToast();
     } else {
       alert('Registration successful! Please log in with your credentials.');
     }
     window.history.replaceState({}, document.title, window.location.pathname);
-  }  // Handle login form submission with AJAX
+  }
+  
+  // Handle login form submission with AJAX
   if (loginForm) {
     loginForm.addEventListener('submit', function(e) {
       e.preventDefault();
@@ -110,7 +121,11 @@ document.addEventListener('DOMContentLoaded', function() {
             close: true,
             gravity: "top",
             position: "right",
-            backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+            style: {
+              background: "white",
+              color: "black",
+              border: "1px solid #ccc"
+            },
             stopOnFocus: true,
           }).showToast();
         } else {
@@ -146,25 +161,35 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add reCAPTCHA token
     data.recaptcha_token = recaptchaToken;
 
+    // Get CSRF token from the form input
+    const csrfToken = document.getElementById('csrfTokenInput')?.value || '';
+
     fetch('/login', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken
+      },
       credentials: 'include',
       body: JSON.stringify(data)
     }).then(async r => {
       if (submitBtn) {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Login';
-      }
-
-      if (r.ok) {
+      }        if (r.ok) {
           const resultText = await r.text(); // Read as text first
           try {
             const resultJson = JSON.parse(resultText); // Try to parse as JSON
             if (resultJson.status === 'mfa_required') {
               showMfaForm();
+            } else if (resultJson.status === 'success' || resultJson.status === 'Login successful.') {
+              // Handle redirect based on response
+              const redirectUrl = resultJson.redirect || '/dashboard';
+              window.location = redirectUrl;
             } else {
-               window.location = '/dashboard'; // Or based on other JSON fields
+               // Default fallback - check for redirect in response
+               const redirectUrl = resultJson.redirect || '/dashboard';
+               window.location = redirectUrl;
             }
           } catch (jsonError) {
             // If not JSON, or JSON doesn't match expected structure, assume it's a simple success
@@ -188,7 +213,11 @@ document.addEventListener('DOMContentLoaded', function() {
               close: true,
               gravity: "top",
               position: "right",
-              backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              },
               stopOnFocus: true,
             }).showToast();
           } else {
@@ -209,7 +238,11 @@ document.addEventListener('DOMContentLoaded', function() {
             close: true,
             gravity: "top",
             position: "right",
-            backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+            style: {
+              background: "white",
+              color: "black",
+              border: "1px solid #ccc"
+            },
             stopOnFocus: true,
           }).showToast();
         } else {
@@ -219,14 +252,7 @@ document.addEventListener('DOMContentLoaded', function() {
         refreshCaptcha();
         console.error('Login fetch error:', err);
       });
-  }
-        if (window.hcaptcha) {
-          window.hcaptcha.reset();
-        }
-        console.error('Login fetch error:', err);
-      });
-    });
-  }
+  } // Close submitLoginForm function
 
   // Handle MFA form submission
   if (mfaVerifyForm) {
@@ -249,9 +275,15 @@ document.addEventListener('DOMContentLoaded', function() {
         mfaSubmitBtn.textContent = 'Verifying...';
       }
 
+      // Get CSRF token for header
+      const csrfToken = document.getElementById('mfaCsrfTokenInput')?.value || '';
+
       fetch('/login/mfa', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken
+        },
         credentials: 'include',
         body: JSON.stringify(data)
       }).then(async r => {
@@ -261,7 +293,15 @@ document.addEventListener('DOMContentLoaded', function() {
           mfaSubmitBtn.textContent = 'Verify';
         }
         if (r.ok) {
-          window.location = '/dashboard';
+          const resultText = await r.text();
+          try {
+            const resultJson = JSON.parse(resultText);
+            const redirectUrl = resultJson.redirect || '/dashboard';
+            window.location = redirectUrl;
+          } catch (jsonError) {
+            // Fallback to dashboard if JSON parsing fails but response is OK
+            window.location = '/dashboard';
+          }
         } else {
           const msg = await r.text();
           if (typeof Toastify === 'function') {
@@ -271,7 +311,11 @@ document.addEventListener('DOMContentLoaded', function() {
               close: true,
               gravity: "top",
               position: "right",
-              backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              },
               stopOnFocus: true,
             }).showToast();
           } else {
@@ -290,7 +334,11 @@ document.addEventListener('DOMContentLoaded', function() {
               close: true,
               gravity: "top",
               position: "right",
-              backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              },
               stopOnFocus: true,
             }).showToast();
         } else {

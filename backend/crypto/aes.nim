@@ -100,3 +100,11 @@ proc aesEncrypt*(key: string, plaintext: string): (string, string) {.deprecated:
 proc aesDecrypt*(key, b64ciphertext, b64iv: string): string {.deprecated: "AES key parameter is ignored; key is always sourced from AES_KEY env var. This function will be removed in a future version.".} =
   # Ignore the key parameter and use environment key instead
   result = aesDecrypt(b64ciphertext, b64iv)
+
+proc generateSecureToken*(length: int): string =
+  ## Generate a cryptographically secure random token
+  ## Returns a hex-encoded string of the specified byte length
+  let tokenBytes = randomBytes(length)
+  result = ""
+  for b in tokenBytes:
+    result.add(b.toHex(2).toLower())

@@ -1,5 +1,5 @@
-import std/[tables, times, locks, sugar]
-import collections/ringbuffers # Nim's standard library for ring buffers
+import std/[tables, times, locks, sugar, deques]
+# import collections/ringbuffers # Nim's standard library for ring buffers - Not available, using deque instead
 import asyncdispatch # For Future type
 import ../db/db # For dbBlockIp
 
@@ -7,18 +7,14 @@ const
   REQUEST_LIMIT_PER_WINDOW* = 100
   TIME_WINDOW_SECONDS* = 10
   BAN_DURATION_MINUTES* = 15
-  # RING_BUFFER_SIZE needs to be large enough to hold all timestamps in a window if they all arrive closely.
-  # If TIME_WINDOW_SECONDS is large, this might need adjustment or a different strategy for timestamp storage.
-  # For 100 reqs in 10s, this is fine.
-  RING_BUFFER_SIZE* = REQUEST_LIMIT_PER_WINDOW + 20 # Margin for buffer operations
 
 var
-  ipRequestTimestamps: Table[string, RingBuffer[Time]]
+  ipRequestTimestamps: Table[string, Deque[DateTime]]
   protectorLock: Lock
 
 proc initDdosProtector*() =
   initLock(protectorLock)
-  ipRequestTimestamps = newTable[string, RingBuffer[Time]]()
+  ipRequestTimestamps = initTable[string, Deque[DateTime]]()
   echo "[INFO] DDoS Protector initialized."
 
 proc isRateLimited*(ip: string): Future[bool] {.async.} =
@@ -28,25 +24,22 @@ proc isRateLimited*(ip: string): Future[bool] {.async.} =
   protectorLock.acquire()
   try:
     if not ipRequestTimestamps.hasKey(ip):
-      ipRequestTimestamps[ip] = initRingBuffer[Time](RING_BUFFER_SIZE)
+      ipRequestTimestamps[ip] = initDeque[DateTime]()
 
     var userTimestamps = ipRequestTimestamps[ip]
-    # The ring buffer will automatically discard oldest entries if it's full.
-    userTimestamps.add(now())
-    # Update the table with the modified ring buffer (if it's a value type, which it is)
-    # No, RingBuffer is a ref type, so modification is in place. Re-assignment is not strictly needed
-    # unless initRingBuffer was called and it's a new instance.
-    # ipRequestTimestamps[ip] = userTimestamps # Not needed if userTimestamps is a reference to the one in table.
-
+    userTimestamps.addLast(now())
+    
     let windowStart = now() - initDuration(seconds = TIME_WINDOW_SECONDS)
 
-    # Iterate over timestamps in the ring buffer to count recent ones
-    # A RingBuffer itself doesn't directly support iterating and removing old items efficiently in one go
-    # while counting. We need to count items newer than windowStart.
-    # A simple approach is to iterate. For very high rates, this could be slow.
-    for t in userTimestamps: # Iterates from oldest to newest
-      if t > windowStart:
-        currentRequestsInWindow += 1
+    # Remove old timestamps outside the window
+    while userTimestamps.len > 0 and userTimestamps.peekFirst() <= windowStart:
+      discard userTimestamps.popFirst()
+    
+    # Count current requests in window
+    currentRequestsInWindow = userTimestamps.len
+
+    # Update the table
+    ipRequestTimestamps[ip] = userTimestamps
 
     echo "[DEBUG] IP: ", ip, " Requests in last ", TIME_WINDOW_SECONDS, "s: ", currentRequestsInWindow, "/", REQUEST_LIMIT_PER_WINDOW
 

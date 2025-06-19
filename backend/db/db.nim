@@ -1,4 +1,4 @@
-import tables, os, strutils
+import tables, os, strutils, options
 import postgres as pg
 import models
 import times, random
@@ -93,30 +93,23 @@ proc dbInsertUser*(username, email, hash, salt: string): bool =
     # Ensure database connection is active
     ensureDbConnection()
     
-    echo "[DB DEBUG] Attempting to insert user: ", username, " email: ", email
-
+    echo "[DB DEBUG] Attempting to insert user: ", username
     let query = "INSERT INTO users (username, email, password_hash, password_salt, password_history, password_last_changed) VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW())"
     let params: array[4, cstring] = [username.cstring, email.cstring, hash.cstring, salt.cstring]
-    echo "[DB DEBUG] Query: INSERT INTO users (username, email, password_hash, password_salt, password_history, password_last_changed) VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW()) with params: ", username, ", ", email, ", HASH, SALT"
     
     # Execute query with detailed error reporting
     let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
     
     let status = pg.pqresultStatus(res)
-    echo "[DB DEBUG] Query status: ", status
-    echo "[DB DEBUG] Expected status: ", pg.PGRES_COMMAND_OK
     
     if status != pg.PGRES_COMMAND_OK:
-      let errorMsg = $pg.pqerrorMessage(dbConn)
-      let resultError = $pg.pqresultErrorMessage(res)
-      echo "[DB ERROR] Query failed with status: ", status
-      echo "[DB ERROR] Connection error: ", errorMsg
-      echo "[DB ERROR] Result error: ", resultError
+      let errorMsg = $pg.pqresultErrorMessage(res)
+      echo "[DB ERROR] Insert failed: ", errorMsg
       result = false
     else:
       result = true
-      echo "[DB DEBUG] Query executed successfully"
+      echo "[DB DEBUG] User inserted successfully"
       
   except Exception as e:
     echo "[DB ERROR] Exception: ", e.msg
@@ -846,3 +839,89 @@ proc dbRemoveExpiredBlockedIps*(): bool =
   except Exception as e:
     echo "[DB ERROR] Exception in dbRemoveExpiredBlockedIps: ", e.msg
     result = false
+
+# Email verification code functions
+proc dbCreateVerificationCode*(userId: int, code: string, expiresInHours: int = 24): bool =
+  try:
+    ensureDbConnection()
+    # Insert new verification code
+    let query = "INSERT INTO email_verification_codes (user_id, verification_code, expires_at) VALUES ($1, $2, NOW() + INTERVAL '" & $expiresInHours & " hours')"
+    let params: array[2, cstring] = [($userId).cstring, code.cstring]
+    
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+    
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if not result:
+      echo "[DB ERROR] Failed to create verification code for user ", userId, ": ", $pg.pqerrorMessage(dbConn)
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbCreateVerificationCode: ", e.msg
+    result = false
+
+proc dbVerifyEmailCode*(userId: int, code: string): bool =
+  try:
+    ensureDbConnection()
+    # Check if code exists, is valid, not expired, and not used
+    let query = "SELECT id FROM email_verification_codes WHERE user_id = $1 AND verification_code = $2 AND expires_at > NOW() AND is_used = FALSE"
+    let params: array[2, cstring] = [($userId).cstring, code.cstring]
+    
+    let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+    
+    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
+      # Mark code as used
+      let updateQuery = "UPDATE email_verification_codes SET is_used = TRUE WHERE user_id = $1 AND verification_code = $2"
+      let updateRes = pg.pqexecParams(dbConn, updateQuery.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+      defer: pg.pqclear(updateRes)
+      
+      result = pg.pqresultStatus(updateRes) == pg.PGRES_COMMAND_OK
+      if result:
+        echo "[DB DEBUG] Email verification code verified and marked as used for user ", userId
+      else:
+        echo "[DB ERROR] Failed to mark verification code as used: ", $pg.pqerrorMessage(dbConn)
+    else:
+      echo "[DB DEBUG] Invalid or expired verification code for user ", userId
+      result = false
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbVerifyEmailCode: ", e.msg
+    result = false
+
+proc dbCleanupExpiredVerificationCodes*(): bool =
+  try:
+    ensureDbConnection()
+    let query = "DELETE FROM email_verification_codes WHERE expires_at < NOW() OR is_used = TRUE"
+    
+    let res = pg.pqexec(dbConn, query.cstring)
+    defer: pg.pqclear(res)
+    
+    result = pg.pqresultStatus(res) == pg.PGRES_COMMAND_OK
+    if result:
+      let rowsAffected = $pg.pqcmdTuples(res)
+      echo "[DB DEBUG] Cleaned up ", rowsAffected, " expired/used verification codes"
+    else:
+      echo "[DB ERROR] Failed to cleanup verification codes: ", $pg.pqerrorMessage(dbConn)
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbCleanupExpiredVerificationCodes: ", e.msg
+    result = false
+
+proc dbGetUserIdByVerificationCode*(code: string): Option[int] =
+  try:
+    ensureDbConnection()
+    let query = "SELECT user_id FROM email_verification_codes WHERE verification_code = $1 AND expires_at > NOW() AND is_used = FALSE"
+    let params: array[1, cstring] = [code.cstring]
+    
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+    
+    if pg.pqresultStatus(res) == pg.PGRES_TUPLES_OK and pg.pqntuples(res) > 0:
+      let userIdStr = $pg.pqgetvalue(res, 0, 0)
+      try:
+        result = some(parseInt(userIdStr))
+      except ValueError:
+        echo "[DB ERROR] Invalid user_id format in verification code: ", userIdStr
+        result = none(int)
+    else:
+      result = none(int)
+  except Exception as e:
+    echo "[DB ERROR] Exception in dbGetUserIdByVerificationCode: ", e.msg
+    result = none(int)

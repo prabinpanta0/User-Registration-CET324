@@ -1,11 +1,12 @@
 document.addEventListener('DOMContentLoaded', function() {
+  // Get reCAPTCHA site key from body data attribute
+  window.RECAPTCHA_SITE_KEY = document.body.getAttribute('data-recaptcha-site-key');
+  
   // Fetch CSRF token
-  fetch('/csrf-token').then(r => r.text()).then(token => {
+  fetch('/csrf-token').then(r => r.json()).then(data => {
     const csrfInput = document.getElementById('csrfTokenInput');
-    if (csrfInput) {
-      csrfInput.value = token;
-    } else {
-      console.warn('CSRF token input field not found.');
+    if (csrfInput && data.csrf_token) {
+      csrfInput.value = data.csrf_token;
     }
   }).catch(err => {
     console.warn('Could not fetch CSRF token:', err);
@@ -26,9 +27,20 @@ document.addEventListener('DOMContentLoaded', function() {
         submitBtn.textContent = 'Registering...';
       }
 
+      // Get CSRF token from the form input - ensure it's just the token value
+      const csrfInput = document.getElementById('csrfTokenInput');
+      const csrfToken = csrfInput?.value || '';
+      
+      // Make sure CSRF token is properly set in the data object
+      data.csrf_token = csrfToken;
+      
+      
       fetch('/register', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken
+        },
         credentials: 'include',
         body: JSON.stringify(data)
       }).then(async r => {
@@ -38,22 +50,25 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         if (r.ok) {
-          // Successful registration
+          // Successful registration - redirect to email verification page
           if (typeof Toastify === 'function') {
             Toastify({
-              text: "Registration successful! Please check your email to verify.",
-              duration: 5000,
+              text: "Registration successful! Redirecting to email verification...",
+              duration: 3000,
               close: true,
               gravity: "top",
               position: "center",
-              backgroundColor: "linear-gradient(to right, #00b09b, #96c93d)",
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              },
               stopOnFocus: true,
             }).showToast();
-          } else {
-            alert("Registration successful! Please check your email to verify.");
           }
+          
+          // Reset form and captcha
           registerForm.reset();
-          // Reset hCaptcha widget if hcaptcha object is available
           if (typeof hcaptcha !== 'undefined') {
             try {
               hcaptcha.reset();
@@ -61,16 +76,31 @@ document.addEventListener('DOMContentLoaded', function() {
               console.warn("Error trying to reset hCaptcha:", hcError);
             }
           }
+          
+          // Redirect to email verification page after a short delay
+          setTimeout(() => {
+            window.location.href = '/email-verification';
+          }, 1500);
         } else {
           const msg = await r.text();
+          console.error('Registration failed:', {
+            status: r.status,
+            statusText: r.statusText,
+            response: msg,
+            url: r.url
+          });
           if (typeof Toastify === 'function') {
             Toastify({
-              text: msg || "Registration failed. Please try again.",
+              text: "Registration failed. Please try again.",
               duration: 3000,
               close: true,
               gravity: "top",
               position: "right",
-              backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              },
               stopOnFocus: true,
             }).showToast();
           } else {
@@ -90,6 +120,11 @@ document.addEventListener('DOMContentLoaded', function() {
           submitBtn.disabled = false;
           submitBtn.textContent = 'Register';
         }
+        console.error('Registration network error:', {
+          error: err,
+          message: err.message,
+          stack: err.stack
+        });
         if (typeof Toastify === 'function') {
           Toastify({
             text: 'Network error. Please try again.',
@@ -97,7 +132,11 @@ document.addEventListener('DOMContentLoaded', function() {
             close: true,
             gravity: "top",
             position: "right",
-            backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)",
+            style: {
+              background: "white",
+              color: "black",
+              border: "1px solid #ccc"
+            },
             stopOnFocus: true,
           }).showToast();
         } else {

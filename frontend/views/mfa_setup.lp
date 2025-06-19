@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MFA Setup - My Lapis App</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/static/tailwind.css">
 </head>
 <body class="bg-gray-50 font-sans leading-normal tracking-normal"> <!-- Changed bg-gray-100 to bg-gray-50 -->
   <div class="container mx-auto p-4">

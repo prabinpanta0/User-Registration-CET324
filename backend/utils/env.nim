@@ -2,10 +2,18 @@ import os, strutils
 
 proc loadEnvFile*(filename = ".env") =
   let currentDir = getCurrentDir()
-  let filePath = if filename.isAbsolute: filename else: currentDir / filename
+  var filePath = if filename.isAbsolute: filename else: currentDir / filename
 
+  # If .env not found in current directory, check parent directory
   if not fileExists(filePath):
+    let parentDir = currentDir.parentDir()
+    filePath = parentDir / filename
+  
+  if not fileExists(filePath):
+    echo "[WARN] Environment file not found: ", filePath
     return
+    
+  echo "[INFO] Loading environment from: ", filePath
   for line in lines(filePath):
     let clean = line.strip()
     if clean.len == 0 or clean.startsWith("#"): continue

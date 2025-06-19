@@ -4,14 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Login - My Lapis App</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <script src="https://www.google.com/recaptcha/api.js?render=<%= recaptcha_site_key %>"></script>
+  <link rel="stylesheet" href="/static/tailwind.css">
   <script>
-    // Make reCAPTCHA site key available to other scripts
+    // Set reCAPTCHA site key
     window.RECAPTCHA_SITE_KEY = '<%= recaptcha_site_key %>';
   </script>
+  <script src="https://www.google.com/recaptcha/api.js?render=<%= recaptcha_site_key %>"></script>
 </head>
-<body class="bg-gray-50 font-sans leading-normal tracking-normal"> <!-- bg-gray-100 to bg-gray-50 -->
+<body class="bg-gray-50 font-sans leading-normal tracking-normal" data-recaptcha-site-key="<%= recaptcha_site_key %>"> <!-- bg-gray-100 to bg-gray-50 -->
   <div class="container mx-auto p-4">
     <div class="max-w-md mx-auto mt-16 bg-white p-10 rounded shadow"> <!-- mt-10 to mt-16, p-8 to p-10 -->
       <h2 class="text-3xl font-bold mb-6 text-center">Login</h2> <!-- text-2xl to text-3xl -->
@@ -38,6 +40,13 @@
         <input type="hidden" name="csrf_token" id="csrfTokenInput" />
         <button id="submitBtn" type="submit" class="w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200">Login</button> <!-- py-2 to py-3 -->
       </form>
+      
+      <!-- reCAPTCHA notice -->
+      <div class="recaptcha-info mt-4">
+        This site is protected by reCAPTCHA and the Google 
+        <a href="https://policies.google.com/privacy" target="_blank">Privacy Policy</a> and 
+        <a href="https://policies.google.com/terms" target="_blank">Terms of Service</a> apply.
+      </div>
 
       <!-- MFA Form (hidden by default) -->
       <div id="mfaForm" class="hidden">

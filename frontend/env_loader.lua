@@ -16,18 +16,15 @@ local function load_env_file(filename)
   local env_vars = {}
   for line in file:lines() do
     -- Skip empty lines and comments
-    if line:match("^%s*$") or line:match("^%s*#") then
-      goto continue
+    if not (line:match("^%s*$") or line:match("^%s*#")) then
+      -- Parse KEY=VALUE format
+      local key, value = line:match("^%s*([^=]+)%s*=%s*(.*)%s*$")
+      if key and value then
+        -- Remove quotes if present
+        value = value:gsub("^[\"'](.*)([\"'])$", "%1")
+        env_vars[key] = value
+      end
     end
-    
-    -- Parse KEY=VALUE format
-    local key, value = line:match("^%s*([^=]+)%s*=%s*(.*)%s*$")
-    if key and value then
-      -- Remove quotes if present
-      value = value:gsub("^[\"'](.*)([\"'])$", "%1")
-      env_vars[key] = value
-    end
-    ::continue::
   end
   
   file:close()

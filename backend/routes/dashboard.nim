@@ -21,6 +21,19 @@ proc isPasswordExpired(passwordLastChanged: string): bool =
     return false # Default to not expired if parsing fails
 
 routes:
+  get "/session-check":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, %*{"authenticated": false}
+      return
+    
+    resp Http200, %*{
+      "authenticated": true,
+      "user_id": user.id,
+      "username": user.username,
+      "mfa_enabled": user.mfaEnabled
+    }
+
   get "/dashboard":
     let user = getCurrentUser(request)
     if user.id == 0:

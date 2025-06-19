@@ -11,8 +11,8 @@ proc isPasswordPwned*(password: string): Future[bool] {.async.} =
   let url = "https://api.pwnedpasswords.com/range/" & prefix
   var client = newAsyncHttpClient()
   client.headers = newHttpHeaders({"User-Agent": "NimHIBPChecker/1.0"})
-  # Set a timeout for the request
-  client.timeout = 5000 # 5 seconds in milliseconds
+  # Set a more aggressive timeout for faster responses
+  client.timeout = 2000 # 2 seconds in milliseconds
 
   try:
     echo "Checking HIBP for prefix: ", prefix
@@ -24,7 +24,7 @@ proc isPasswordPwned*(password: string): Future[bool] {.async.} =
       for line in lines:
         let parts = line.split(':')
         if parts.len == 2 and parts[0] == suffix:
-          echo "Password pwned: ", password, " (hash: ", hash, ")"
+          echo "Password found in HIBP database (prefix: ", prefix, ")"
           return true
       echo "Password not found in HIBP response for prefix: ", prefix
       return false
@@ -36,6 +36,8 @@ proc isPasswordPwned*(password: string): Future[bool] {.async.} =
     echo "Exception during HIBP check for prefix ", prefix, ": ", e.msg
     # Default to not pwned in case of network errors or timeouts
     return false
+  finally:
+    client.close()
 
 when isMainModule:
   # Example Usage (for testing purposes)

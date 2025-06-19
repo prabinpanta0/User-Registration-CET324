@@ -1,1 +1,33 @@
-@import "tailwindcss";
+/* Custom styles for ACS Assignment Application */
+
+/* Ensure reCAPTCHA v3 badge is visible and positioned correctly */
+.grecaptcha-badge {
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+    bottom: 14px !important;
+    right: 14px !important;
+    position: fixed !important;
+    pointer-events: auto !important;
+}
+
+/* Ensure reCAPTCHA notice is styled properly and separate from forms */
+.recaptcha-info {
+    font-size: 12px;
+    color: #666;
+    margin-top: 15px;
+    margin-bottom: 10px;
+    text-align: center;
+    padding: 8px;
+    border-top: 1px solid #e5e5e5;
+    background-color: #f9f9f9;
+}
+
+.recaptcha-info a {
+    color: #1976d2;
+    text-decoration: none;
+}
+
+.recaptcha-info a:hover {
+    text-decoration: underline;
+}

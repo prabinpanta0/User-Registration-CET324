@@ -1,16 +1,132 @@
-import std/[times, asyncdispatch, options, os]
-import ./env # For BASE_URL, potentially sender email
+import std/[asyncdispatch, os, osproc, strutils]
 
-# Configuration - consider moving to env.nim or a config module
-const SENDER_EMAIL = "noreply@example.com" # Replace with your domain or get from env
+proc sendEmailWithPython(recipient: string, subject: string, body: string, isHtml: bool): Future[bool] {.async.} =
+  try:
+    let smtpHost = getEnv("SMTP_HOST", "smtp.gmail.com")
+    let smtpPort = getEnv("SMTP_PORT", "587")
+    let smtpUser = getEnv("SMTP_USER", "")
+    let smtpPassword = getEnv("SMTP_PASSWORD", "")
+    let fromName = getEnv("SMTP_FROM_NAME", "ACS_ASSIGNMENT")
+    let fromEmail = getEnv("SMTP_FROM_EMAIL", "noreply@acs.com")
+    
+    # Clean the password - remove any comments or extra spaces
+    let cleanPassword = smtpPassword.split('#')[0].strip()
+    
+    let pythonScript = """
+import smtplib
+import sys
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def send_email():
+    try:
+        smtp_host = sys.argv[1]
+        smtp_port = int(sys.argv[2])
+        smtp_user = sys.argv[3]
+        smtp_password = sys.argv[4]
+        from_name = sys.argv[5]
+        from_email = sys.argv[6]
+        to_email = sys.argv[7]
+        subject = sys.argv[8]
+        body_file = sys.argv[9]
+        content_type = sys.argv[10]
+        
+        # Read body from file
+        with open(body_file, 'r', encoding='utf-8') as f:
+            body = f.read()
+        
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = f"{from_name} <{from_email}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        # Attach body
+        msg.attach(MIMEText(body, content_type))
+        
+        # Connect to server
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        
+        # Send email
+        text = msg.as_string()
+        server.sendmail(smtp_user, to_email, text)  # Use smtp_user as from address
+        server.quit()
+        
+        print("SUCCESS")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        return False
+
+if __name__ == "__main__":
+    send_email()
+"""
+    
+    # Write Python script to temporary file
+    let scriptPath = "/tmp/send_email.py"
+    writeFile(scriptPath, pythonScript)
+    
+    # Write body to temporary file to avoid shell escaping issues
+    let bodyPath = "/tmp/email_body.txt"
+    writeFile(bodyPath, body)
+    
+    # Execute Python script with body file path
+    let contentType = if isHtml: "html" else: "plain"
+    let escapedSubject = subject.replace("\"", "\\\"")
+    
+    let cmd = "python3 \"" & scriptPath & "\" " &
+              "\"" & smtpHost & "\" " &
+              "\"" & smtpPort & "\" " &
+              "\"" & smtpUser & "\" " &
+              "\"" & cleanPassword & "\" " &
+              "\"" & fromName & "\" " &
+              "\"" & fromEmail & "\" " &
+              "\"" & recipient & "\" " &
+              "\"" & escapedSubject & "\" " &
+              "\"" & bodyPath & "\" " &
+              "\"" & contentType & "\""
+    
+    echo "[EMAIL] Sending email to: ", recipient
+    let (output, exitCode) = execCmdEx(cmd)
+    
+    # Clean up temporary files
+    removeFile(scriptPath)
+    removeFile(bodyPath)
+    
+    if exitCode == 0 and output.contains("SUCCESS"):
+      echo "[EMAIL] Email sent successfully via Python to: ", recipient
+      return true
+    else:
+      echo "[EMAIL] Python SMTP failed. Output: ", output
+      return false
+      
+  except Exception as e:
+    echo "[EMAIL] Python SMTP error: ", e.msg
+    return false
 
 proc sendEmail*(recipient: string, subject: string, body: string, isHtml: bool = false): Future[bool] {.async.} =
-  # Temporary implementation that logs instead of sending actual emails
-  # This is to avoid SMTP SSL compilation issues
-  echo "[EMAIL] Would send email to: ", recipient
-  echo "[EMAIL] Subject: ", subject
-  echo "[EMAIL] Content (HTML=", isHtml, "): ", body[0..min(100, body.len-1)], if body.len > 100: "..." else: ""
-  return true # Always return success for development
+  try:
+    let smtpUser = getEnv("SMTP_USER", "")
+    let smtpPassword = getEnv("SMTP_PASSWORD", "")
+    
+    if smtpUser == "" or smtpPassword == "":
+      echo "[EMAIL] SMTP credentials not configured"
+      return false
+
+    # Use Python's smtplib to send email (requires Python3 on system)
+    let pythonAvailable = execCmdEx("which python3").exitCode == 0
+    if pythonAvailable:
+      return await sendEmailWithPython(recipient, subject, body, isHtml)
+    else:
+      echo "[EMAIL] Python3 not available for SMTP"
+      return false
+      
+  except Exception as e:
+    echo "[EMAIL] Error sending email: ", e.msg
+    return false
 
 proc getBaseUrl*(): string =
   result = getEnv("BASE_URL", "http://localhost:8080") # Default for dev
@@ -19,43 +135,34 @@ proc getBaseUrl*(): string =
 
 
 when isMainModule:
-  # Example Usage (for testing purposes)
-  # Ensure Postfix or an SMTP server is running on localhost:25 for this to work.
-  echo "Running email sender example..."
-  loadEnvFile() # Load .env for BASE_URL
-
-  let testRecipient = "test@localhost" # Change to a real address for actual sending
-  let testSubject = "Test Email from Nim App"
-  let testBodyText = "Hello,\n\nThis is a test email sent from the Nim application's email_sender.nim."
-  let testBodyHtml = """
-  <html>
-    <body>
-      <h1>Hello!</h1>
-      <p>This is a test <b>HTML</b> email sent from the Nim application's <code>email_sender.nim</code>.</p>
-      <p>Visit our <a href="{BASE_URL}">website</a>.</p>
-    </body>
-  </html>
-  """.replace("{BASE_URL}", getBaseUrl())
-
-  echo "Sending plain text email to: ", testRecipient
-  let textSent = waitFor sendEmail(testRecipient, testSubject & " (Plain Text)", testBodyText)
-  if textSent:
-    echo "Plain text email sent successfully (check SMTP server logs/mail client)."
-  else:
-    echo "Failed to send plain text email."
-
-  echo "\nSending HTML email to: ", testRecipient
-  let htmlSent = waitFor sendEmail(testRecipient, testSubject & " (HTML)", testBodyHtml, isHtml=true)
-  if htmlSent:
-    echo "HTML email sent successfully (check SMTP server logs/mail client)."
-  else:
-    echo "Failed to send HTML email."
-
-  # Test with an invalid recipient format (optional, SMTP server might reject)
-  # echo "\nSending to invalid recipient format:"
-  # let invalidRecipientSent = waitFor sendEmail("invalid-email", "Test Invalid Recipient", "This should fail or be rejected.")
-  # if not invalidRecipientSent:
-  #   echo "Sending to invalid recipient failed as expected or was rejected."
-  # else:
-  #   echo "Sending to invalid recipient succeeded (unexpected)."
-  echo "Email sender tests complete."
+  # Production Email Sender - ACS Assignment
+  # This module provides SMTP email functionality for the ACS Assignment application.
+  # 
+  # Used for:
+  # - Email verification during user registration
+  # - Password reset emails
+  # - MFA recovery code emails
+  # - Security notifications
+  #
+  # Configuration required in .env:
+  # - SMTP_HOST: SMTP server hostname (e.g., smtp.gmail.com)
+  # - SMTP_PORT: SMTP server port (e.g., 587 for STARTTLS)
+  # - SMTP_USER: SMTP username/email address
+  # - SMTP_PASSWORD: SMTP password or app-specific password
+  # - SMTP_FROM_NAME: Display name for sent emails
+  # - SMTP_FROM_EMAIL: Reply-to email address
+  #
+  # Example usage in application routes:
+  # ```nim
+  # let emailSent = await sendEmail(
+  #   user.email,
+  #   "Verify your email address", 
+  #   emailVerificationBody
+  # )
+  # ```
+  #
+  # For testing SMTP configuration, use: test/test_smtp.nim
+  
+  echo "ACS Assignment Email Sender Module"
+  echo "This is a production email utility."
+  echo "For testing, run: nim c -r test/test_smtp.nim"

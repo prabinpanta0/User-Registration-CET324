@@ -59,9 +59,15 @@ document.addEventListener('DOMContentLoaded', function() {
         submitBtn.textContent = 'Verifying...';
       }
 
+      // Get CSRF token from the form input
+      const csrfToken = document.getElementById('csrfTokenInput')?.value || '';
+
       fetch('/mfa/verify', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken
+        },
         credentials: 'include',
         body: JSON.stringify(data)
       }).then(async r => {
@@ -108,7 +114,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 }).catch(err => {
                   console.error('Failed to copy recovery codes: ', err);
                   if (typeof Toastify === 'function') {
-                    Toastify({ text: 'Failed to copy codes.', duration: 2000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+                    Toastify({ 
+                      text: 'Failed to copy codes.', 
+                      duration: 2000, 
+                      style: {
+                        background: "white",
+                        color: "black",
+                        border: "1px solid #ccc"
+                      }
+                    }).showToast();
                   } else {
                     alert('Failed to copy codes.');
                   }
@@ -145,7 +159,15 @@ document.addEventListener('DOMContentLoaded', function() {
           const msg = await r.text();
           // Assuming Toastify might be available via layout.lp
           if (typeof Toastify === 'function') {
-            Toastify({ text: 'Error: ' + msg, duration: 3000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+            Toastify({ 
+              text: 'Error: ' + msg, 
+              duration: 3000, 
+              style: {
+                background: "white",
+                color: "black",
+                border: "1px solid #ccc"
+              }
+            }).showToast();
           } else {
             alert('Error: ' + msg);
           }
@@ -160,7 +182,15 @@ document.addEventListener('DOMContentLoaded', function() {
           submitBtn.textContent = 'Verify & Enable MFA';
         }
         if (typeof Toastify === 'function') {
-           Toastify({ text: 'Network error. Please try again.', duration: 3000, backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
+           Toastify({ 
+             text: 'Network error. Please try again.', 
+             duration: 3000, 
+             style: {
+               background: "white",
+               color: "black",
+               border: "1px solid #ccc"
+             }
+           }).showToast();
         } else {
           alert('Network error. Please try again.');
         }

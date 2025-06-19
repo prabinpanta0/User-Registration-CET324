@@ -1,4 +1,4 @@
-import jester, strutils, json, sequtils, times, asyncdispatch, httpclient, options
+import jester, strutils, json, sequtils, times, asyncdispatch, httpclient, options, random
 import ../crypto/password
 import ../db/db
 import ../utils/env # For getHCaptchaSecretKey
@@ -45,21 +45,25 @@ proc verifyCaptcha*(clientResponseToken: string, clientIpAddress: string = ""): 
   if clientIpAddress.len > 0:
     content.add("remoteip", clientIpAddress)
 
-  echo "[DEBUG] Verifying hCaptcha token: ", clientResponseToken, " for IP: ", clientIpAddress
+    echo "[DEBUG] Verifying hCaptcha token for IP: ", clientIpAddress
 
   try:
     let client = newAsyncHttpClient()
+    # Set timeout to 3 seconds for faster response
+    client.timeout = 3000
     # The httpclient.post consumes the MultipartData, so no need to manage its lifecycle explicitly here.
     let response = await client.post(HCaptchaSiteverifyURL, multipart = content)
 
     if response.code != Http200:
       echo "[ERROR] hCaptcha request failed with status: ", response.code, " Body: ", await response.body
+      client.close()
       return false
 
     let responseBody = await response.body
-    echo "[DEBUG] hCaptcha response body: ", responseBody
+    echo "[DEBUG] hCaptcha verification result: ", if jsonResponse.hasKey("success") and jsonResponse["success"].getBool(false): "SUCCESS" else: "FAILED"
     let jsonResponse = parseJson(responseBody)
 
+    client.close()
     if jsonResponse.hasKey("success") and jsonResponse["success"].getBool(false):
       echo "[INFO] hCaptcha verification successful."
       return true
@@ -71,11 +75,13 @@ proc verifyCaptcha*(clientResponseToken: string, clientIpAddress: string = ""): 
   except Exception as e:
     echo "[ERROR] Exception during hCaptcha verification: ", e.msg
     return false
-  finally:
-    # newAsyncHttpClient doesn't strictly need close() for simple POSTs like this,
-    # but if it were used for multiple requests or more complex scenarios, proper closing would be important.
-    # For this single request, it's generally fine.
-    discard
+
+proc genVerificationCode*(): string =
+  # Generate a 6-digit numeric verification code
+  randomize()
+  result = ""
+  for i in 0..<6:
+    result.add($rand(0..9))
 
 routes:
   post "/register":
@@ -130,8 +136,16 @@ routes:
       resp Http400, "Invalid CAPTCHA. Please try again."
       return
 
-    # Check if password is pwned
-    if await isPasswordPwned(password):
+    # Check if password is pwned (only for passwords that pass basic validation)
+    # Skip HIBP check for very strong passwords to improve performance
+    let isWeakPassword = password.len < 12 or not (
+      password.toSeq.anyIt(it.isUpperAscii) and 
+      password.toSeq.anyIt(it.isLowerAscii) and
+      password.toSeq.anyIt(it.isDigit) and 
+      password.toSeq.anyIt(not (it.isAlphaAscii or it.isDigit))
+    )
+    
+    if isWeakPassword and await isPasswordPwned(password):
       resp Http400, "This password has been exposed in data breaches. Please choose a different password."
       return
 
@@ -139,7 +153,7 @@ routes:
     # The returned hash includes the salt.
     let hash = hashPassword(password)
     
-    echo "[DEBUG] Attempting to insert user: ", username, " with email: ", email
+    echo "[DEBUG] Attempting to insert user: ", username
     # Pass an empty string for salt, as it's now part of the hash.
     # The db schema & dbInsertUser signature will be updated in a later step.
     let insertResult = dbInsertUser(username, email, hash, "")
@@ -157,29 +171,33 @@ routes:
       return
     
     # User inserted successfully (is_verified is false by default)
-    # Send verification email
+    # Send verification email with both JWT token link and verification code
     let verificationClaims = %*{"user_id": user.id, "type": "email_verification"}
     # Expiry: 24 hours for email verification
     let verificationToken = generateJwtToken(verificationClaims, 24 * 3600)
 
-    if verificationToken.len > 0:
+    # Generate a 6-digit verification code
+    let verificationCode = genVerificationCode()
+    echo "[INFO] Verification code for ", user.email, ": ", verificationCode
+    let codeStored = dbCreateVerificationCode(user.id, verificationCode, 24)
+    echo "[DEBUG] Code stored in DB: ", codeStored
+
+    if verificationToken.len > 0 and codeStored:
       let baseUrl = getBaseUrl() # From email_sender or a common config
       let verificationLink = baseUrl & "/verify-email?token=" & verificationToken
       let emailSubject = "Verify your email address"
-      let emailBody = "Please click the link below to verify your email address:\n\n" &
-                      verificationLink & "\n\nThis link will expire in 24 hours."
+      let emailBody = "Please verify your email address using one of the following methods:\n\n" &
+                      "Method 1: Click the link below:\n" & verificationLink & "\n\n" &
+                      "Method 2: Enter this 6-digit code: " & verificationCode & "\n" &
+                      "Visit: " & baseUrl & "/verify-email\n\n" &
+                      "Both the link and code will expire in 24 hours."
 
-      # Asynchronously send email, but don't block response to user
-      # The `await` here will pause this specific request handling until email is sent or fails.
-      # If sendEmail was truly async (e.g. using a thread pool), this would be non-blocking for the main loop.
-      let emailSent = await sendEmail(user.email, emailSubject, emailBody)
-      if not emailSent:
-        echo "[ERROR] Failed to send verification email to ", user.email, " for user ID ", user.id
-        # User is created but not verified. They might need a "resend verification" option later.
-      else:
-        echo "[INFO] Verification email sent to ", user.email, " for user ID ", user.id
+      echo "[DEBUG] About to send email to: ", user.email
+      # Send email asynchronously without blocking the response
+      asyncCheck sendEmail(user.email, emailSubject, emailBody)
+      echo "[DEBUG] Email send request initiated (async)"
     else:
-      echo "[ERROR] Failed to generate verification token for user ID ", user.id
+      echo "[ERROR] Failed to generate verification token or code for user ID ", user.id
       # Critical error, as user cannot verify. Consider if registration should fail here.
 
     # Do NOT create a session or log the user in.

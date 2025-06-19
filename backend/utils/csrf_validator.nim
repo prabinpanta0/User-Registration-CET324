@@ -1,4 +1,4 @@
-import jester, strutils, options, times
+import jester, strutils, options, times, json
 import ../db/db # For dbGetSessionByToken
 import ../db/models # For Session model
 
@@ -10,14 +10,50 @@ import ../db/models # For Session model
 proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
   var submittedToken: string
 
+  # Debug: Show all request parameters
+  echo "[CSRF DEBUG] All request params:"
+  for key, val in request.params:
+    echo "[CSRF DEBUG]   ", key, " = '", val, "'"
+  
   # Try to get token from form parameters (common for standard HTML forms)
   # In Jester, form data is typically accessed through request.params
   submittedToken = request.params.getOrDefault("csrf_token", "")
+  echo "[CSRF DEBUG] Token from params: '", submittedToken, "'"
 
-  # If not in form body, try headers (common for AJAX)
+  # If not in form body, try JSON body (common for AJAX)
+  if submittedToken.len == 0 and request.body.len > 0:
+    echo "[CSRF DEBUG] Trying JSON body, length: ", request.body.len
+    # DO NOT log the raw body as it may contain passwords
+    echo "[CSRF DEBUG] Raw body contains sensitive data - not logged for security"
+    try:
+      let jsonBody = parseJson(request.body)
+      echo "[CSRF DEBUG] JSON parsed successfully"
+      if jsonBody.hasKey("csrf_token"):
+        var tokenValue = jsonBody["csrf_token"].getStr()
+        echo "[CSRF DEBUG] Token extracted from JSON"
+        
+        # Handle case where csrf_token field contains a JSON string instead of plain token
+        if tokenValue.startsWith("{") and tokenValue.endsWith("}"):
+          echo "[CSRF DEBUG] Token appears to be JSON, attempting to parse..."
+          try:
+            let tokenJson = parseJson(tokenValue)
+            if tokenJson.hasKey("csrf_token"):
+              tokenValue = tokenJson["csrf_token"].getStr()
+              echo "[CSRF DEBUG] Extracted token from nested JSON"
+          except Exception as e:
+            echo "[CSRF DEBUG] Failed to parse nested JSON: ", e.msg
+        
+        submittedToken = tokenValue
+    except Exception as e:
+      echo "[CSRF DEBUG] JSON parse error: ", e.msg
+      # Not valid JSON or no csrf_token field, continue to other methods
+      discard
+
+  # If not in JSON body, try headers (common for AJAX)
   if submittedToken.len == 0:
     try:
       submittedToken = request.headers["X-CSRF-Token"]
+      echo "[CSRF DEBUG] Token from headers: '", submittedToken, "'"
     except KeyError:
       submittedToken = ""
 
