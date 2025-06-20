@@ -48,10 +48,8 @@ proc hashPassword*(password: string): string =
     for i in 0..<16:
       saltBytes[i] = byte(rand(256))
     
-    # Convert salt bytes to string for the argon2 function
-    var saltStr = ""
-    for b in saltBytes:
-      saltStr.add(char(b))
+    # Encode salt bytes to Base64 for safe string representation
+    let saltStr = base64.encode(cast[string](saltBytes))
     
     echo "[DEBUG] Hashing password with params - m: ", m_cost, " t: ", t_cost, " p: ", p_lanes, " salt bytes length: ", saltBytes.len
     
@@ -108,9 +106,7 @@ proc verifyPassword*(password: string, encodedHash: string): bool =
       
       # Manual verification: decode the salt from base64 to get raw bytes
       let saltBytes = base64.decode(saltPart)
-      var saltStr = ""
-      for b in saltBytes:
-        saltStr.add(char(b))
+      let saltStr = base64.encode(cast[string](saltBytes))
       echo "[DEBUG] Using decoded salt bytes, length: ", saltBytes.len
       
       # Re-hash with same parameters using raw salt bytes
