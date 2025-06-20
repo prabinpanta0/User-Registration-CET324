@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function logout() {
     // Get CSRF token for logout
-    fetch('/csrf-token')
+    fetch('/csrf-token', { credentials: 'include' })
       .then(response => response.json())
       .then(data => {
         return fetch('/logout', {
