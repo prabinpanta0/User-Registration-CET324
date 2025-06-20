@@ -86,7 +86,12 @@ proc genVerificationCode*(): string =
 routes:
   post "/register":
     let startTime = epochTime()
-    let ip = "127.0.0.1"  # Fallback IP for now - TODO: Replace with actual client IP
+    # Extract client IP from X-Forwarded-For header or use request's remote address
+    let ip =
+      if request.headers.hasKey("X-Forwarded-For"):
+        request.headers["X-Forwarded-For"].split(',')[0].strip()
+      else:
+        request.remoteAddr
     if not isRequestAllowed(ip, registerAttemptConfig):
       resp Http429, "Too many registration attempts. Please try later."
       return
