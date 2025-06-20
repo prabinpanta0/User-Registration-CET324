@@ -56,3 +56,22 @@ build/
 # Lua cache
 .luacache/
 
+*pid
+# Temporary files
+*.tmp
+# Backup files
+*.bak
+# Editor specific files
+*.swp
+# IDE specific files
+.idea/
+# Visual Studio Code specific files
+.vscode/
+# JetBrains specific files
+*.iml
+# Python cache
+__pycache__/
+# Log files
+*.log
+# Coverage reports
+coverage/
