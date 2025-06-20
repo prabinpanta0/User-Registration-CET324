@@ -22,7 +22,10 @@ local function render_template_with_health_check(template_name, req)
   -- First check if backend is available
   if not check_backend_health() then
     -- If backend is down, serve the maintenance page
-    local file = io.open("static/maintenance.html", "r")
+    -- Resolve absolute path to maintenance.html based on script location
+    local script_dir = debug.getinfo(1, "S").source:match("@(.*/)")
+    local maintenance_path = (script_dir or "./") .. "static/maintenance.html"
+    local file = io.open(maintenance_path, "r")
     if file then
       local content = file:read("*a")
       file:close()
