@@ -18,7 +18,10 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
   # Try to get token from form parameters (common for standard HTML forms)
   # In Jester, form data is typically accessed through request.params
   submittedToken = request.params.getOrDefault("csrf_token", "")
-  echo "[CSRF DEBUG] Token from params: '", submittedToken, "'"
+  if submittedToken.len > 0:
+    echo "[CSRF DEBUG] Token from params: [PRESENT]"
+  else:
+    echo "[CSRF DEBUG] Token from params: [MISSING]"
 
   # If not in form body, try JSON body (common for AJAX)
   if submittedToken.len == 0 and request.body.len > 0:

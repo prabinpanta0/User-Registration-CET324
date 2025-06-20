@@ -40,6 +40,15 @@ routes:
       resp Http401, "Not authenticated."
       return
 
+    # Enforce MFA setup for new users
+    if not user.mfaEnabled:
+      resp Http403, %*{
+        "error": "MFA setup required",
+        "redirect": "/mfa/setup",
+        "message": "You must set up MFA before accessing the dashboard."
+      }
+      return
+
     let expired = isPasswordExpired(user.passwordLastChanged)
     resp Http200, %*{
       "username": user.username,
@@ -67,7 +76,16 @@ routes:
     if newpw != confirm:
       resp Http400, "Passwords do not match."
       return
-    if not verifyPassword(current, user.passwordSalt, user.passwordHash):
+    # Verify current password using the same logic as login
+    var currentPasswordVerified = false
+    if verifyPassword(current, user.passwordHash):
+      currentPasswordVerified = true
+    elif user.passwordSalt.len > 0:
+      # Try legacy verification if salt exists
+      if verifyPassword_sha256_legacy(current, user.passwordSalt, user.passwordHash):
+        currentPasswordVerified = true
+    
+    if not currentPasswordVerified:
       resp Http401, "Current password incorrect."
       return
     if not validPassword(newpw): # Assuming validPassword is now imported
@@ -79,9 +97,8 @@ routes:
       resp Http400, "This new password has been exposed in data breaches. Please choose a different one."
       return
 
-    let salt = generateSalt() # Corrected function name
-    let hash = hashPassword(newpw, salt) # Assuming hashPassword is from ../crypto/password
-    if not dbUpdateUserPassword(user.id, hash, salt):
+    let hash = hashPassword(newpw) # Use Argon2id hashing without separate salt
+    if not dbUpdateUserPassword(user.id, hash, ""):
       # dbUpdateUserPassword returns false if the new password is in the recent history,
       # or if there was a general database error during the update.
       resp Http400, "Failed to update password. The new password may be one of the last 5 passwords used, or a server error occurred. Please try a different password."

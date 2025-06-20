@@ -30,14 +30,12 @@ proc getCaptchaForIp*(ip: string): string =
 
 proc connectDb*() =
   let dbUrl = getEnv("DB_URL")
-  echo "[DB] DB_URL from env: ", dbUrl
+  echo "[DB] Attempting database connection..."
   if dbUrl.len == 0:
     raise newException(ValueError, "DB_URL environment variable is not set.")
   try:
-    echo "[DB] Connecting to: ", dbUrl
     dbConn = pg.pqconnectdb(cstring(dbUrl))
     let status = pg.pqstatus(dbConn)
-    echo "[DB] Connection status: ", status
     if status != pg.CONNECTION_OK:
       let errorMsg = $pg.pqerrorMessage(dbConn)
       echo "[DB ERROR] Connection failed: ", errorMsg
@@ -86,6 +84,58 @@ proc dbUserExists*(username, email: string): bool =
       
   except Exception as e:
     echo "[DB ERROR] Exception checking user existence: ", e.msg
+    return false  # Assume user doesn't exist if we can't check
+
+proc dbUserExists*(username: string): bool =
+  try:
+    # Ensure database connection is active
+    ensureDbConnection()
+    
+    let query = "SELECT COUNT(*) FROM users WHERE username = $1"
+    let params: array[1, cstring] = [username.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+    
+    let status = pg.pqresultStatus(res)
+    if status != pg.PGRES_TUPLES_OK:
+      echo "[DB ERROR] Failed to check username existence"
+      return false  # Assume user doesn't exist if we can't check
+    
+    let nrows = pg.pqntuples(res)
+    if nrows > 0:
+      let count = parseInt($pg.pqgetvalue(res, 0, 0))
+      return count > 0
+    else:
+      return false
+      
+  except Exception as e:
+    echo "[DB ERROR] Exception checking username existence: ", e.msg
+    return false  # Assume user doesn't exist if we can't check
+
+proc dbUserExistsByEmail*(email: string): bool =
+  try:
+    # Ensure database connection is active
+    ensureDbConnection()
+    
+    let query = "SELECT COUNT(*) FROM users WHERE email = $1"
+    let params: array[1, cstring] = [email.cstring]
+    let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
+    defer: pg.pqclear(res)
+    
+    let status = pg.pqresultStatus(res)
+    if status != pg.PGRES_TUPLES_OK:
+      echo "[DB ERROR] Failed to check email existence"
+      return false  # Assume user doesn't exist if we can't check
+    
+    let nrows = pg.pqntuples(res)
+    if nrows > 0:
+      let count = parseInt($pg.pqgetvalue(res, 0, 0))
+      return count > 0
+    else:
+      return false
+      
+  except Exception as e:
+    echo "[DB ERROR] Exception checking email existence: ", e.msg
     return false  # Assume user doesn't exist if we can't check
 
 proc dbInsertUser*(username, email, hash, salt: string): bool =
@@ -199,7 +249,7 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
   ensureDbConnection()
   let query = "SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed, is_verified FROM users WHERE username = $1 OR email = $2"
   let params: array[2, cstring] = [userOrEmail.cstring, userOrEmail.cstring]
-  echo "[DB DEBUG] Query: SELECT id, username, email, password_hash, password_salt, mfa_enabled, mfa_secret_enc, mfa_iv, recovery_codes_enc, last_login, password_history, to_char(password_last_changed, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as password_last_changed, is_verified FROM users WHERE username = $1 OR email = $2 with param: ", userOrEmail
+  echo "[DB DEBUG] Query: SELECT [users table] with param: [REDACTED]"
 
   let res = pg.pqexecParams(dbConn, query.cstring, 2, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
   
@@ -306,8 +356,8 @@ proc dbInsertSession*(userId: int, token: string, expiresAt: string, csrfToken: 
     let csrfTokenCstr = csrfToken.cstring
     let cParams: array[4, cstring] = [userIdStr.cstring, tokenCstr, expiresAtCstr, csrfTokenCstr]
 
-    echo "[DB DEBUG] Inserting session: userId=", userId, " token=", token[0..10], "... expiresAt=", expiresAt, " csrf_token=", csrfToken
-    echo "[DB DEBUG] Session insert query: INSERT INTO sessions (user_id, session_token, created_at, expires_at, csrf_token) VALUES ($1, $2, now(), to_timestamp($3), $4)"
+    echo "[DB DEBUG] Inserting session for user ", userId
+    echo "[DB DEBUG] Session insert query: [INSERT INTO sessions]"
 
     let res = pg.pqexecParams(dbConn, query.cstring, 4, nil, cast[cstringArray](cParams[0].unsafeAddr), nil, nil, 0)
     defer: pg.pqclear(res)
@@ -321,19 +371,15 @@ proc dbGetSessionByToken*(token: string): Session =
   ensureDbConnection()
   let query = "SELECT id, user_id, session_token, created_at, expires_at, csrf_token FROM sessions WHERE session_token = $1 AND expires_at > now()"
   let params: array[1, cstring] = [token.cstring]
-  echo "[DB DEBUG] Session lookup query: SELECT id, user_id, session_token, created_at, expires_at, csrf_token FROM sessions WHERE session_token = $1 AND expires_at > now() with param: ", token[0..min(token.len-1, 9)], "..."
 
   let res = pg.pqexecParams(dbConn, query.cstring, 1, nil, cast[cstringArray](params[0].unsafeAddr), nil, nil, 0)
   
   try:
     let status = pg.pqresultStatus(res)
-    echo "[DB DEBUG] Session query status: ", status
     if status != pg.PGRES_TUPLES_OK:
-      echo "[DB DEBUG] Session query failed"
       return Session()
     
     let nrows = pg.pqntuples(res)
-    echo "[DB DEBUG] Session query returned ", nrows, " rows"
     if nrows > 0:
       result = Session(
         id: parseInt($pg.pqgetvalue(res, 0, 0)),
@@ -343,9 +389,7 @@ proc dbGetSessionByToken*(token: string): Session =
         expiresAt: $pg.pqgetvalue(res, 0, 4),
         csrfToken: $pg.pqgetvalue(res, 0, 5)
       )
-      echo "[DB DEBUG] Session found: userId=", result.userId, " token=", result.sessionToken[0..10], "..., csrf_token=", result.csrfToken
     else:
-      echo "[DB DEBUG] No valid session found"
       result = Session()
   finally:
     pg.pqclear(res)

@@ -6,13 +6,18 @@ import jester
 import db/db
 import db/models
 import crypto/password
+import crypto/aes
 import utils/rate_limit
 import utils/csrf_validator
 import utils/ddos_protector
 import utils/email_sender
 import utils/jwt_utils
+import utils/totp_utils
+import utils/mfa_recovery_utils
 import times, strutils, json, random, options
 import nimcrypto/sysrand as cryptoRandom # For cryptographically secure random bytes
+import nimcrypto # For hmac_sha1
+import postgres as pg # For health check constants
 
 # --- Helper Procedures ---
 
@@ -22,6 +27,21 @@ const registerAttemptConfig = RateLimitConfig(
   maxAttemptsShortTerm: 10,       # Max 10 registration attempts
   windowSecShortTerm: 3600,     # within a 1-hour window
   blockDurationSecLongTerm: 86400 # Long-term DB block for 24 hours if limit exceeded
+)
+
+# Rate Limiting Configurations for MFA
+const mfaSetupConfig = RateLimitConfig(
+  routeIdentifier: "mfa_initial_setup",
+  maxAttemptsShortTerm: 3,        # Max 3 setup attempts (generation of new secret)
+  windowSecShortTerm: 600,      # within a 10-minute window by an authenticated user
+  blockDurationSecLongTerm: 3600  # Long-term DB block for 1 hour if limit exceeded
+)
+
+const mfaInitialVerifyConfig = RateLimitConfig(
+  routeIdentifier: "mfa_initial_verify",
+  maxAttemptsShortTerm: 5,        # Max 5 verification attempts for the newly generated secret
+  windowSecShortTerm: 120,      # within a 2-minute window
+  blockDurationSecLongTerm: 1800  # Long-term DB block for 30 minutes if limit exceeded
 )
 
 proc generateSecureRandomToken(length: int = 32): string =
@@ -97,14 +117,52 @@ proc createSession(userId: int, temporary: bool = false): string =
     # 7 days for regular session
     $((epochTime().int64 + 604800))
 
-  echo "[DEBUG] Creating session for userId=", userId, " token=", result[0..10], "... expiresAt=", expiresAt
+  echo "[DEBUG] Creating session for userId=", userId, " token=", if result.len > 10: result[0..10] & "..." else: result, " expiresAt=", expiresAt
   discard dbInsertSession(userId, result, expiresAt)
+
+proc getCurrentUser(request: Request): User =
+  let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+  if sessionToken.len == 0:
+    return User()  # Return empty user if no session
+  
+  # Ensure database connection
+  ensureDbConnection()
+  
+  let session = dbGetSessionByToken(sessionToken)
+  if session.userId == 0:
+    return User()  # Return empty user if invalid session
+  
+  let user = dbGetUserById(session.userId)
+  return user
 
 # --- Jester Routes ---
 
 routes:
   get "/":
     resp "Hello World!"
+
+  # Health check endpoint
+  get "/health":
+    try:
+      # Ensure we have a database connection
+      ensureDbConnection()
+      if checkDbConnection():
+        resp Http200, $(%*{"status": "healthy", "database": "connected", "timestamp": $now()})
+      else:
+        resp Http503, $(%*{"status": "unhealthy", "database": "connection_failed", "timestamp": $now()})
+    except Exception as e:
+      echo "[HEALTH ERROR] Exception in health check: ", e.msg
+      resp Http503, $(%*{"status": "unhealthy", "database": "error", "error": e.msg, "timestamp": $now()})
+
+  # API info endpoint
+  get "/api/info":
+    resp Http200, $(%*{
+      "name": "ACS Assignment Backend",
+      "version": "1.0.0",
+      "status": "running",
+      "features": ["authentication", "mfa", "email_verification", "session_management"],
+      "timestamp": $now()
+    })
 
   post "/login":
     echo "[DEBUG] Login endpoint hit"
@@ -173,9 +231,7 @@ routes:
   # Dashboard API routes
   get "/dashboard/info":
     let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
-    echo "[DEBUG] Dashboard info - session token: ", if sessionToken.len > 0: sessionToken[0..10] & "..." else: "NONE"
     if sessionToken.len == 0:
-      echo "[DEBUG] Dashboard info - no session token"
       resp Http401, "Not authenticated."
       return
     
@@ -500,7 +556,14 @@ routes:
     # Verify the code and mark as used
     if dbVerifyEmailCode(userId, code):
       if dbSetUserVerified(userId):
-        resp Http200, "Email verified successfully. You can now log in."
+        # Automatically log in the user after email verification
+        let session = createSession(userId, temporary = false)
+        setCookie("session", session, expires = now() + 7.days)
+        
+        # Update last login time
+        discard dbUpdateUserLastLogin(userId)
+        
+        resp Http200, $(%*{"status": "success", "message": "Email verified successfully. Setting up MFA...", "redirect": "/mfa/setup"})
       else:
         echo "[ERROR] Failed to set user as verified after code validation for user ID: ", userId
         resp Http500, "Failed to complete verification. Please try again."
@@ -550,6 +613,91 @@ routes:
   get "/email-verification":
     resp readFile("frontend/views/email_verification.lp")
 
+  # MFA Setup Route
+  post "/mfa/setup":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
+    let ip = getClientIp(request)
+    if not isRequestAllowed(ip, mfaSetupConfig):
+      resp Http429, "Too many MFA setup attempts. Please try later."
+      return
+
+    let secret = generateTotpSecret()
+    let (encSecret, iv) = aesEncrypt(secret)
+    if not dbSetUserMfaSecret(user.id, encSecret, iv):
+      resp Http500, "Failed to store MFA secret."
+      return
+
+    let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
+    let response = %*{
+      "secret": secret,
+      "otpauth": otpauth
+    }
+    resp Http200, $response
+
+  # MFA Verify Route  
+  post "/mfa/verify":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
+    let body = parseJson(request.body)
+    let code = body["code"].getStr
+
+    let ip = getClientIp(request)
+    if not isRequestAllowed(ip, mfaInitialVerifyConfig):
+      resp Http429, "Too many MFA verification attempts. Please try later."
+      return
+
+    # Get encrypted secret from database
+    let (encryptedSecret, iv) = dbGetUserMfaSecret(user.id)
+    if encryptedSecret.len == 0:
+      resp Http400, "No MFA secret found. Please setup MFA first."
+      return
+
+    # Decrypt the secret
+    let secret = aesDecrypt(encryptedSecret, iv)
+    if secret.len == 0:
+      resp Http500, "Failed to decrypt MFA secret."
+      return
+
+    # Verify TOTP code
+    if not verifyTotp(secret, code):
+      resp Http400, "Invalid MFA code."
+      return
+
+    # Enable MFA for user and generate recovery codes
+    if not dbEnableUserMfa(user.id):
+      resp Http500, "Failed to enable MFA."
+      return
+
+    # Generate and store recovery codes
+    randomize() # Ensure random is seeded before generating codes
+    let (plaintextCodes, hashedCodes) = generateRecoveryCodes()
+    if not dbSetUserRecoveryCodes(user.id, hashedCodes):
+      resp Http200, $(%*{"status": "mfa_enabled", "message": "MFA enabled, but recovery code generation failed. Please contact support."})
+      return
+
+    let response = %*{
+      "status": "success",
+      "recoveryCodes": plaintextCodes
+    }
+    resp Http200, $response
+
 # --- Main Execution ---
 
 when isMainModule:
@@ -575,6 +723,13 @@ when isMainModule:
   try:
     connectDb()
     echo "[MAIN] Database connection completed"
+    
+    # Verify connection immediately
+    if checkDbConnection():
+      echo "[MAIN] Database connection verified successfully"
+    else:
+      echo "[MAIN ERROR] Database connection verification failed"
+      quit(1)
   except Exception as e:
     echo "[MAIN ERROR] Database connection failed: ", e.msg
     quit(1)
@@ -583,5 +738,7 @@ when isMainModule:
   initDdosProtector()
 
   # Start Jester server
-  echo "[MAIN] Starting Jester server..."
+  echo "[MAIN] Starting Jester server on port ", portNum, "..."
+  
+  # Use the traditional jester approach
   runForever()

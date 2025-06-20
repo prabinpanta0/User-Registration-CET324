@@ -4,7 +4,7 @@ import argon2 # Assuming a common Nim library named 'argon2'
 import os, strutils, random
 # Imports for legacy functions
 import nimcrypto, base64
-import nimcrypto/sysrand # Required for legacy generateSalt_legacy
+# nimcrypto/sysrand only needed for legacy functions, keep if needed
 
 # --- Argon2id Implementation (Current) ---
 
@@ -15,8 +15,8 @@ import nimcrypto/sysrand # Required for legacy generateSalt_legacy
 # p: parallelism factor (lanes)
 const
   DefaultArgon2MemoryCost = 65536 # KiB
-  DefaultArgon2Iterations = 2 # OWASP recommendation: 2 iterations for Argon2id
-  DefaultArgon2Parallelism = 1 # OWASP recommendation: 1 degree of parallelism
+  DefaultArgon2Iterations = 3 # Match .env default
+  DefaultArgon2Parallelism = 4 # Match .env default
 
 # Nim's standard library `os.getEnv` returns string.
 # `strutils.parseInt` is used for conversion. Helper procs ensure defaults.
@@ -43,50 +43,85 @@ proc hashPassword*(password: string): string =
   let t_cost = getArgon2Iterations() # Number of iterations
   let p_lanes = getArgon2Parallelism() # Degree of parallelism
   try:
-    # Generate a random salt for each password
+    # Generate raw salt bytes (not base64 encoded)
     var saltBytes: array[16, byte]
     for i in 0..<16:
       saltBytes[i] = byte(rand(256))
-    let salt = base64.encode(saltBytes)
+    
+    # Convert salt bytes to string for the argon2 function
+    var saltStr = ""
+    for b in saltBytes:
+      saltStr.add(char(b))
+    
+    echo "[DEBUG] Hashing password with params - m: ", m_cost, " t: ", t_cost, " p: ", p_lanes, " salt bytes length: ", saltBytes.len
     
     # Use the full argon2 function: argon2(type, pwd, salt, iterations, memory, threads, hashlen)
-    let hashResult = argon2("id", password, salt, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
+    let hashResult = argon2("id", password, saltStr, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
     result = hashResult.enc # Return the encoded hash string
-    echo "[DEBUG] Argon2 hash generated: ", result
+    echo "[DEBUG] Generated hash: ", result
   except Exception as e:
     echo "[ERROR] Error hashing password with Argon2: ", e.msg
     raise
 
 proc verifyPassword*(password: string, encodedHash: string): bool =
-  # For argon2 verification, we need to extract salt and parameters from the encoded hash
-  # and re-hash the password to compare
+  # For argon2 verification, try to use the built-in verify function first
   try:
-    # The encoded hash contains all parameters needed for verification
-    # We can use a simpler approach: extract the salt from the encoded hash
-    # Format: $argon2id$v=19$m=4096,t=1,p=1$base64salt$base64hash
+    echo "[DEBUG] Argon2 verify input - password length: ", password.len, " hash: ", encodedHash
     
-    let parts = encodedHash.split('$')
-    if parts.len < 5:
-      echo "[ERROR] Invalid encoded hash format"
-      return false
+    # Try different argon2 verify function names that might be available
+    when declared(argon2_verify):
+      result = argon2_verify(encodedHash, password)
+      echo "[DEBUG] Argon2 verify result using argon2_verify: ", result
+      return result
+    elif declared(verify):
+      result = verify(encodedHash, password)
+      echo "[DEBUG] Argon2 verify result using verify: ", result
+      return result
+    else:
+      echo "[DEBUG] No built-in verify function found, using manual comparison"
       
-    let paramsPart = parts[3] # m=4096,t=1,p=1
-    let saltPart = parts[4]   # base64salt
-    
-    # Parse parameters
-    var m_cost, t_cost, p_lanes: uint32
-    for param in paramsPart.split(','):
-      let keyVal = param.split('=')
-      if keyVal.len == 2:
-        case keyVal[0]:
-        of "m": m_cost = keyVal[1].parseUint.uint32
-        of "t": t_cost = keyVal[1].parseUint.uint32  
-        of "p": p_lanes = keyVal[1].parseUint.uint32
-    
-    # Re-hash with same parameters
-    let hashResult = argon2("id", password, saltPart, t_cost, m_cost, p_lanes, 32'u32)
-    result = hashResult.enc == encodedHash
-    echo "[DEBUG] Argon2 verify result for hash '", encodedHash, "': ", result
+      # Compare the hashes directly by re-hashing with extracted parameters
+      let parts = encodedHash.split('$')
+      if parts.len < 6:
+        echo "[ERROR] Invalid encoded hash format, expected 6 parts, got: ", parts.len
+        return false
+        
+      let algorithm = parts[1]    # argon2id
+      let version = parts[2]      # v=19
+      let paramsPart = parts[3]   # m=4096,t=1,p=1
+      let saltPart = parts[4]     # base64salt
+      let hashPart = parts[5]     # base64hash
+      
+      echo "[DEBUG] Hash components - algorithm: ", algorithm, " version: ", version, " params: ", paramsPart
+      
+      # Parse parameters
+      var m_cost, t_cost, p_lanes: uint32
+      for param in paramsPart.split(','):
+        let keyVal = param.split('=')
+        if keyVal.len == 2:
+          case keyVal[0]:
+          of "m": m_cost = keyVal[1].parseUint.uint32
+          of "t": t_cost = keyVal[1].parseUint.uint32  
+          of "p": p_lanes = keyVal[1].parseUint.uint32
+      
+      echo "[DEBUG] Parsed params - m: ", m_cost, " t: ", t_cost, " p: ", p_lanes
+      
+      # Manual verification: decode the salt from base64 to get raw bytes
+      let saltBytes = base64.decode(saltPart)
+      var saltStr = ""
+      for b in saltBytes:
+        saltStr.add(char(b))
+      echo "[DEBUG] Using decoded salt bytes, length: ", saltBytes.len
+      
+      # Re-hash with same parameters using raw salt bytes
+      let hashResult = argon2("id", password, saltStr, t_cost, m_cost, p_lanes, 32'u32)
+      let computedHash = hashResult.enc
+      
+      echo "[DEBUG] Original hash: ", encodedHash
+      echo "[DEBUG] Computed hash: ", computedHash
+      
+      result = computedHash == encodedHash
+      echo "[DEBUG] Argon2 verify result: ", result
   except Exception as e:
     echo "[ERROR] Error verifying password with Argon2: ", e.msg
     result = false # On error, assume verification failed for security

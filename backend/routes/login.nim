@@ -383,6 +383,11 @@ routes:
       resp Http401, "Invalid session."
 
   post "/logout":
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+      
     let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
     let tempSession = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
     

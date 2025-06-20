@@ -85,15 +85,19 @@ proc genVerificationCode*(): string =
 
 routes:
   post "/register":
+    let startTime = epochTime()
     let ip = "127.0.0.1"  # Fallback IP for now - TODO: Replace with actual client IP
     if not isRequestAllowed(ip, registerAttemptConfig):
       resp Http429, "Too many registration attempts. Please try later."
       return
 
+    echo "[DEBUG] Registration started at: ", startTime
+    
     # CSRF Check (pre-session)
     if not verifyCsrf(request, isPreSession = true):
       resp Http403, "CSRF token validation failed."
       return
+    echo "[DEBUG] CSRF validation completed in: ", epochTime() - startTime, "s"
     # Clear the double submit cookie after successful use
     var csrfCookieToClear = newCookie("csrf_token_value", "", expires = past())
     csrfCookieToClear.path = "/"
@@ -132,11 +136,14 @@ routes:
     # For clientIp, it's better to extract it reliably, e.g. from X-Forwarded-For if behind proxy.
     # For now, passing the ip variable which is "127.0.0.1" as a placeholder or empty.
     # let clientIpForCaptcha = request.headers.getOrDefault("X-Forwarded-For", ip) # Example
+    echo "[DEBUG] Starting CAPTCHA verification..."
+    let captchaStartTime = epochTime()
     if not await verifyCaptcha(captchaToken, ip): # Using the placeholder 'ip' for now
       resp Http400, "Invalid CAPTCHA. Please try again."
       return
+    echo "[DEBUG] CAPTCHA verification completed in: ", epochTime() - captchaStartTime, "s"
 
-    # Check if password is pwned (only for passwords that pass basic validation)
+    # Check if password is pwned (only for weaker passwords to improve performance)
     # Skip HIBP check for very strong passwords to improve performance
     let isWeakPassword = password.len < 12 or not (
       password.toSeq.anyIt(it.isUpperAscii) and 
@@ -145,13 +152,29 @@ routes:
       password.toSeq.anyIt(not (it.isAlphaAscii or it.isDigit))
     )
     
-    if isWeakPassword and await isPasswordPwned(password):
-      resp Http400, "This password has been exposed in data breaches. Please choose a different password."
-      return
+    if isWeakPassword:
+      echo "[DEBUG] Checking weak password against HIBP..."
+      if await isPasswordPwned(password):
+        resp Http400, "This password has been exposed in data breaches. Please choose a different password."
+        return
+    else:
+      echo "[DEBUG] Strong password detected, skipping HIBP check for performance"
 
     # Argon2id handles salt internally; hashPassword now only takes the password.
     # The returned hash includes the salt.
+    echo "[DEBUG] Starting password hashing..."
+    let hashStartTime = epochTime()
     let hash = hashPassword(password)
+    echo "[DEBUG] Password hashing completed in: ", epochTime() - hashStartTime, "s"
+    
+    # Check if username or email already exists before attempting insert
+    if dbUserExists(username):
+      resp Http400, "Username already exists. Please choose a different username."
+      return
+    
+    if dbUserExistsByEmail(email):
+      resp Http400, "Email already registered. Please use a different email or try logging in."
+      return
     
     echo "[DEBUG] Attempting to insert user: ", username
     # Pass an empty string for salt, as it's now part of the hash.
@@ -182,6 +205,9 @@ routes:
     let codeStored = dbCreateVerificationCode(user.id, verificationCode, 24)
     echo "[DEBUG] Code stored in DB: ", codeStored
 
+    echo "[DEBUG] Starting email sending process..."
+    let emailStartTime = epochTime()
+    
     if verificationToken.len > 0 and codeStored:
       let baseUrl = getBaseUrl() # From email_sender or a common config
       let verificationLink = baseUrl & "/verify-email?token=" & verificationToken
@@ -195,7 +221,7 @@ routes:
       echo "[DEBUG] About to send email to: ", user.email
       # Send email asynchronously without blocking the response
       asyncCheck sendEmail(user.email, emailSubject, emailBody)
-      echo "[DEBUG] Email send request initiated (async)"
+      echo "[DEBUG] Email send request initiated (async) in: ", epochTime() - emailStartTime, "s"
     else:
       echo "[ERROR] Failed to generate verification token or code for user ID ", user.id
       # Critical error, as user cannot verify. Consider if registration should fail here.
@@ -203,4 +229,6 @@ routes:
     # Do NOT create a session or log the user in.
     # The MFA setup redirect should also be conditional on verification, or handled post-verification.
     # For now, just inform user to check email.
+    let totalTime = epochTime() - startTime
+    echo "[DEBUG] Total registration process completed in: ", totalTime, "s"
     resp Http200, "Registration successful. Please check your email to verify your account."

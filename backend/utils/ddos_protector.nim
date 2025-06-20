@@ -1,4 +1,4 @@
-import std/[tables, times, locks, sugar, deques]
+import std/[tables, times, locks, deques]
 # import collections/ringbuffers # Nim's standard library for ring buffers - Not available, using deque instead
 import asyncdispatch # For Future type
 import ../db/db # For dbBlockIp

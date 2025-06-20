@@ -141,3 +141,25 @@ routes:
       responseJson["recovery_codes"].add(newJString(code))
 
     resp Http200, $responseJson
+
+  get "/mfa/setup":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # If MFA is already enabled, redirect to dashboard
+    if user.mfaEnabled:
+      resp Http200, %*{
+        "status": "already_enabled",
+        "message": "MFA is already enabled for this account.",
+        "redirect": "/dashboard"
+      }
+      return
+
+    # Return setup page info - the frontend will handle generating QR code
+    resp Http200, %*{
+      "status": "setup_required",
+      "message": "Please set up MFA to secure your account.",
+      "username": user.username
+    }

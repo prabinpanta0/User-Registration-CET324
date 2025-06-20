@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service Temporarily Unavailable - 502 Bad Gateway</title>
+    <link rel="stylesheet" href="/static/maintenance.css">
+
+        }
+    </style> -->
+</head>
+<body>
+    <div class="error-code">502</div>
+    
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">� ACS Auth</div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="error-container">
+            <div class="error-icon">
+                <span>⚠️</span>
+            </div>
+            
+            <h1>Bad Gateway</h1>
+            <p class="subtitle">Connection to authentication service failed</p>
+            <p class="description">
+                We're unable to connect to our authentication backend service. This is likely a temporary issue 
+                and our team has been automatically notified.
+            </p>
+
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-item-header">
+                        <div class="status-indicator down" id="backend-status"></div>
+                        <h3 class="status-title">Authentication Service</h3>
+                    </div>
+                    <p class="status-message" id="backend-message">Connection failed</p>
+                </div>
+                
+                <div class="status-item">
+                    <div class="status-item-header">
+                        <div class="status-indicator up"></div>
+                        <h3 class="status-title">Frontend Service</h3>
+                    </div>
+                    <p class="status-message">Operational</p>
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="btn btn-primary" id="retry-btn" onclick="checkBackendStatus()">
+                    <span class="loading-spinner" id="loading-spinner"></span>
+                    <span id="retry-text">Check Status</span>
+                </button>
+            </div>
+
+            <footer class="footer">
+                <p>If this problem persists, please try again in a few minutes.</p>
+                <p class="timestamp" id="last-check">Last checked: Never</p>
+                
+                <div id="technical-details" class="technical-details">
+                    <h4>Technical Information:</h4>
+                    <ul>
+                        <li>Error: 502 Bad Gateway</li>
+                        <li>Service: Authentication Backend</li>
+                        <li>Expected at: http://127.0.0.1:5000</li>
+                        <li>User Agent: <span id="user-agent"></span></li>
+                        <li>Timestamp: <span id="error-timestamp"></span></li>
+                    </ul>
+                </div>
+            </footer>
+        </div>
+    </main>
+
+    <script>
+        let isChecking = false;
+        let checkInterval;
+        
+        function updateTimestamp() {
+            const now = new Date();
+            document.getElementById('last-check').textContent = 
+                'Last checked: ' + now.toLocaleTimeString();
+            document.getElementById('error-timestamp').textContent = now.toISOString();
+        }
+
+        async function checkBackendStatus() {
+            if (isChecking) return;
+            
+            isChecking = true;
+            const retryBtn = document.getElementById('retry-btn');
+            const retryText = document.getElementById('retry-text');
+            const spinner = document.getElementById('loading-spinner');
+            const backendStatus = document.getElementById('backend-status');
+            const backendMessage = document.getElementById('backend-message');
+            
+            // Update UI to show checking state
+            retryBtn.disabled = true;
+            retryText.textContent = 'Checking...';
+            spinner.classList.add('show');
+            backendStatus.className = 'status-indicator checking';
+            backendMessage.textContent = 'Checking connection...';
+            
+            try {
+                // Try to connect to the health endpoint with timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
+                
+                const response = await fetch('/health', {
+                    method: 'GET',
+                    signal: controller.signal,
+                    cache: 'no-cache',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (response.ok) {
+                    // Backend is back online
+                    backendStatus.className = 'status-indicator up';
+                    backendMessage.textContent = 'Connected successfully';
+                    retryText.textContent = 'Service Restored!';
+                    
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 1500);
+                    return;
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+            } catch (error) {
+                // Still down
+                backendStatus.className = 'status-indicator down';
+                if (error.name === 'AbortError') {
+                    backendMessage.textContent = 'Connection timeout';
+                } else {
+                    backendMessage.textContent = 'Connection failed';
+                }
+                console.log('Backend check failed:', error.message);
+            }
+            
+            // Reset button state
+            setTimeout(() => {
+                retryBtn.disabled = false;
+                retryText.textContent = 'Check Status';
+                spinner.classList.remove('show');
+                isChecking = false;
+                updateTimestamp();
+            }, 1500);
+        }
+
+        // Initialize page
+        function init() {
+            document.getElementById('user-agent').textContent = navigator.userAgent;
+            updateTimestamp();
+            
+            // Don't auto-check anymore - only manual button clicks
+        }
+
+        // Start when page loads
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>

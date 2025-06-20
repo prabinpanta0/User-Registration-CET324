@@ -6,28 +6,121 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Fetch MFA setup data
   if (mfaSecretInput && qrContainer) {
-    fetch('/mfa/setup', {method: 'POST', credentials: 'include'})
-      .then(r => {
-        if (!r.ok) {
-          throw new Error('Failed to fetch MFA setup data: ' + r.status);
-        }
-        return r.json();
-      })
-      .then(data => {
-        mfaSecretInput.value = data.secret;
-        if (typeof QRCode !== 'undefined') {
-          new QRCode(qrContainer, {
-            text: data.otpauth,
-            width: 256,
-            height: 256
-          });
-        } else {
-          qrContainer.innerHTML = '<p class="text-blue-600">QR code library not loaded. Please enter the secret manually in your authenticator app.</p>';
-        }
-      })
-      .catch(err => {
-        console.error('Failed to load MFA setup data:', err);
-        qrContainer.innerHTML = '<p class="text-red-500">Failed to load MFA setup. Please refresh and try again.</p>';
+    // Create abort controller for request timeout
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 10000); // 10 second timeout
+    
+    // First fetch CSRF token, then make MFA setup request
+    fetch('/csrf-token', {
+      method: 'GET',
+      credentials: 'include',
+      signal: abortController.signal
+    })
+    .then(response => {
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error('Failed to fetch CSRF token: ' + response.status);
+      }
+      return response.json();
+    })
+    .then(csrfData => {
+      const csrfToken = csrfData.csrf_token;
+      
+      // Create new abort controller for MFA request
+      const mfaAbortController = new AbortController();
+      const mfaTimeoutId = setTimeout(() => mfaAbortController.abort(), 15000); // 15 second timeout
+      
+      // Now make the MFA setup request with CSRF token
+      return fetch('/mfa/setup', {
+        method: 'POST', 
+        credentials: 'include',
+        signal: mfaAbortController.signal,
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          csrf_token: csrfToken
+        })
+      }).finally(() => clearTimeout(mfaTimeoutId));
+    })
+    .then(r => {
+      if (!r.ok) {
+        throw new Error('Failed to fetch MFA setup data: ' + r.status);
+      }
+      return r.json();
+    })
+    .then(data => {
+      mfaSecretInput.value = data.secret;
+      if (typeof QRCode !== 'undefined') {
+        new QRCode(qrContainer, {
+          text: data.otpauth,
+          width: 256,
+          height: 256
+        });
+      } else {
+        qrContainer.innerHTML = '<p class="text-blue-600">QR code library not loaded. Please enter the secret manually in your authenticator app.</p>';
+      }
+    })
+    .catch(err => {
+      console.error('Failed to load MFA setup data:', err);
+      
+      // Determine error type and provide appropriate feedback
+      if (err.name === 'AbortError') {
+        // Request was aborted (timeout)
+        qrContainer.innerHTML = `
+          <div class="text-red-500 p-4 border border-red-300 rounded">
+            <h3 class="font-bold">Request Timeout</h3>
+            <p>The server is taking too long to respond. Please try again.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+              Retry
+            </button>
+          </div>
+        `;
+      } else if (err.message.includes('Failed to fetch')) {
+        // Network error - server might be down
+        qrContainer.innerHTML = `
+          <div class="text-red-500 p-4 border border-red-300 rounded">
+            <h3 class="font-bold">Connection Error</h3>
+            <p>Unable to connect to the server. Please check your connection and try again later.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+              Retry
+            </button>
+          </div>
+        `;
+      } else if (err.message.includes('401')) {
+        // Authentication error
+        qrContainer.innerHTML = `
+          <div class="text-red-500 p-4 border border-red-300 rounded">
+            <h3 class="font-bold">Authentication Required</h3>
+            <p>Please log in to set up MFA.</p>
+            <button onclick="window.location.href='/'" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+              Go to Login
+            </button>
+          </div>
+        `;
+      } else if (err.message.includes('403')) {
+        // CSRF or permission error
+        qrContainer.innerHTML = `
+          <div class="text-red-500 p-4 border border-red-300 rounded">
+            <h3 class="font-bold">Security Error</h3>
+            <p>Security validation failed. Please refresh the page and try again.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+              Refresh Page
+            </button>
+          </div>
+        `;
+      } else {
+        // Generic error
+        qrContainer.innerHTML = `
+          <div class="text-red-500 p-4 border border-red-300 rounded">
+            <h3 class="font-bold">Error</h3>
+            <p>Failed to load MFA setup. Please try again.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+              Retry
+            </button>
+          </div>
+        `;
+      }
       });
   } else {
     console.warn('MFA secret input or QR container not found.');

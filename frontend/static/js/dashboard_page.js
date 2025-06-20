@@ -18,15 +18,29 @@ document.addEventListener('DOMContentLoaded', function() {
   let currentNewRecoveryCodes = []; // To store codes for copy/download
 
   function logout() {
-    fetch('/logout', {
-      method: 'POST',
-      credentials: 'include'
-    }).then(() => {
-      window.location = '/login';
-    }).catch(err => {
-      console.error("Logout failed:", err);
-      // Add user feedback if necessary
-    });
+    // Get CSRF token for logout
+    fetch('/csrf-token')
+      .then(response => response.json())
+      .then(data => {
+        return fetch('/logout', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            csrf_token: data.csrf_token
+          })
+        });
+      })
+      .then(() => {
+        window.location = '/login';
+      })
+      .catch(err => {
+        console.error("Logout failed:", err);
+        // Even if logout fails, redirect to login page
+        window.location = '/login';
+      });
   }
 
   if (logoutBtn) {
