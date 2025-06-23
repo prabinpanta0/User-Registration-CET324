@@ -333,16 +333,23 @@ routes:
       if userSession.id != 0:
         isExistingSession = true
 
-    let newCsrfToken = generateSecureRandomToken()
-
     if isExistingSession:
-      if dbUpdateSessionCsrfToken(userSession.sessionToken, newCsrfToken):
-        echo "[CSRF] Updated CSRF token in session for user ID: ", userSession.userId
-        resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"
+      # For authenticated users, return existing CSRF token if present, otherwise generate new one
+      if userSession.csrfToken.len > 0:
+        echo "[CSRF] Returning existing CSRF token in session for user ID: ", userSession.userId
+        resp Http200, $(%*{"csrf_token": userSession.csrfToken}), "application/json"
       else:
-        echo "[CSRF ERROR] Failed to update CSRF token in session database for user ID: ", userSession.userId
-        resp Http500, "Error generating CSRF token (session update failed)."
+        # No CSRF token in session yet, generate one
+        let newCsrfToken = generateSecureRandomToken()
+        if dbUpdateSessionCsrfToken(userSession.sessionToken, newCsrfToken):
+          echo "[CSRF] Created new CSRF token in session for user ID: ", userSession.userId
+          resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"
+        else:
+          echo "[CSRF ERROR] Failed to update CSRF token in session database for user ID: ", userSession.userId
+          resp Http500, "Error generating CSRF token (session update failed)."
     else:
+      # For non-authenticated users, use double submit cookie pattern
+      let newCsrfToken = generateSecureRandomToken()
       setCookie("csrf_token_value", newCsrfToken, expires = now() + 30.minutes)
       echo "[CSRF] Issued CSRF token via double submit cookie method."
       resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"

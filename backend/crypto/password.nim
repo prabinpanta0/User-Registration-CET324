@@ -48,13 +48,18 @@ proc hashPassword*(password: string): string =
     for i in 0..<16:
       saltBytes[i] = byte(rand(256))
     
+    # Convert salt bytes to string for Base64 encoding
+    var saltStr = newString(saltBytes.len)
+    for i in 0..<saltBytes.len:
+      saltStr[i] = char(saltBytes[i])
+    
     # Encode salt bytes to Base64 for safe string representation
-    let saltStr = base64.encode(cast[string](saltBytes))
+    let saltB64 = base64.encode(saltStr)
     
     echo "[DEBUG] Hashing password with params - m: ", m_cost, " t: ", t_cost, " p: ", p_lanes, " salt bytes length: ", saltBytes.len
     
     # Use the full argon2 function: argon2(type, pwd, salt, iterations, memory, threads, hashlen)
-    let hashResult = argon2("id", password, saltStr, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
+    let hashResult = argon2("id", password, saltB64, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
     result = hashResult.enc # Return the encoded hash string
     echo "[DEBUG] Generated hash: ", result
   except Exception as e:
