@@ -54,11 +54,25 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
 
   # If not in JSON body, try headers (common for AJAX)
   if submittedToken.len == 0:
-    try:
-      submittedToken = request.headers["X-CSRF-Token"]
-      echo "[CSRF DEBUG] Token from headers: '", submittedToken, "'"
-    except KeyError:
-      submittedToken = ""
+    # Case-insensitive header lookup for CSRF token
+    var headerToken = ""
+    if request.headers.hasKey("X-CSRF-Token"):
+      headerToken = request.headers["X-CSRF-Token"]
+    elif request.headers.hasKey("x-csrf-token"):
+      headerToken = request.headers["x-csrf-token"]
+    if headerToken.len > 0:
+      echo "[CSRF DEBUG] Token from headers: '", headerToken, "'"
+      # Handle case where header contains a JSON string instead of plain token
+      if headerToken.startsWith("{") and headerToken.endsWith("}"):
+        echo "[CSRF DEBUG] Header token appears to be JSON, attempting to parse..."
+        try:
+          let tokenJson = parseJson(headerToken)
+          if tokenJson.hasKey("csrf_token"):
+            headerToken = tokenJson["csrf_token"].getStr()
+            echo "[CSRF DEBUG] Extracted token from JSON header"
+        except Exception as e:
+          echo "[CSRF DEBUG] Failed to parse JSON header: ", e.msg
+      submittedToken = headerToken
 
   # If still not found, try query params (less common for CSRF, but possible)
   if submittedToken.len == 0:

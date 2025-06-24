@@ -142,12 +142,12 @@ document.addEventListener('DOMContentLoaded', function() {
   function revokeSession(sessionId) {
     // Get CSRF token first, then make the request
     fetch('/csrf-token', {credentials: 'include'})
-      .then(r => r.text())
-      .then(csrfToken => {
+      .then(r => r.json())
+      .then(csrfData => {
         return fetch(`/dashboard/sessions/${sessionId}/revoke`, {
           method: 'POST',
           headers: {
-            'X-CSRF-Token': csrfToken
+            'X-CSRF-Token': csrfData.csrf_token
           },
           credentials: 'include'
         });
@@ -228,13 +228,13 @@ document.addEventListener('DOMContentLoaded', function() {
       }
       // Fetch CSRF token first, then make the POST request
       fetch('/csrf-token', {credentials: 'include'})
-        .then(r => r.text())
-        .then(csrfToken => {
+        .then(r => r.json())
+        .then(csrfData => {
           return fetch('/mfa/recovery-codes/regenerate', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-CSRF-Token': csrfToken // Send CSRF token in header
+              'X-CSRF-Token': csrfData.csrf_token // Send CSRF token in header
             },
             credentials: 'include'
             // No body needed for this request as per current backend implementation
@@ -326,6 +326,50 @@ document.addEventListener('DOMContentLoaded', function() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }
+    });
+  }
+
+  // Listener to download and regenerate recovery codes directly
+  const downloadExistingRecoveryCodesBtn = document.getElementById('downloadExistingRecoveryCodesBtn');
+  if (downloadExistingRecoveryCodesBtn) {
+    downloadExistingRecoveryCodesBtn.addEventListener('click', function() {
+      // Fetch CSRF token, regenerate codes, then download them
+      fetch('/csrf-token', { credentials: 'include' })
+        .then(r => r.json())
+        .then(csrfData => {
+          return fetch('/mfa/recovery-codes/regenerate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': csrfData.csrf_token
+            },
+            credentials: 'include'
+          });
+        })
+        .then(r => {
+          if (!r.ok) throw new Error('Failed to regenerate codes: ' + r.status);
+          return r.json();
+        })
+        .then(data => {
+          if (data.status === 'success' && data.recovery_codes) {
+            const codesText = 'Your MFA Recovery Codes for SecureApp:\n\n' + data.recovery_codes.join('\n') + '\n\nSave these codes in a secure place. Each code can only be used once.';
+            const blob = new Blob([codesText], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'secureapp-recovery-codes.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          } else {
+            throw new Error(data.message || 'Unknown error during code regeneration.');
+          }
+        })
+        .catch(err => {
+          console.error('Error regenerating/downloading recovery codes:', err);
+          alert('Error: ' + err.message);
+        });
     });
   }
 

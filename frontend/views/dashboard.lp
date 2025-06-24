@@ -40,6 +40,7 @@
     <h3 class="text-lg font-semibold mb-3">MFA Recovery Codes</h3>
     <p id="recoveryCodesStatus" class="text-sm text-gray-700 mb-3">Loading status...</p>
     <button id="regenerateRecoveryCodesBtn" class="text-sm bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2">Regenerate Codes</button>
+    <button id="downloadExistingRecoveryCodesBtn" class="text-sm bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 ml-2">Download Codes</button>
 
     <!-- Modal or area to display newly regenerated codes -->
     <div id="newRecoveryCodesDisplay" class="hidden mt-4 p-4 border border-gray-300 rounded bg-white">

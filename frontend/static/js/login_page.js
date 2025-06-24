@@ -75,13 +75,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // Fetch CSRF token and set it in both forms
-  fetch('/csrf-token').then(r => r.text()).then(token => {
-    if (csrfTokenInput) csrfTokenInput.value = token;
-    if (mfaCsrfTokenInput) mfaCsrfTokenInput.value = token;
-  }).catch(err => {
-    console.warn('Could not fetch CSRF token:', err);
-  });
+  // Fetch CSRF token and set it in both forms (use include for credentials)
+  fetch('/csrf-token', {credentials: 'include'})
+    .then(r => r.json())
+    .then(data => {
+      if (csrfTokenInput) csrfTokenInput.value = data.csrf_token;
+      if (mfaCsrfTokenInput) mfaCsrfTokenInput.value = data.csrf_token;
+    })
+    .catch(err => {
+      console.warn('Could not fetch CSRF token:', err);
+    });
 
   // Check for registration success message
   const urlParams = new URLSearchParams(window.location.search);
@@ -266,86 +269,84 @@ document.addEventListener('DOMContentLoaded', function() {
       } else {
         data.mfa_code = formData.get('mfa_code');
       }
-      // Always include CSRF token
-      data.csrf_token = formData.get('csrf_token');
 
-      const mfaSubmitBtn = mfaVerifyForm.querySelector('button[type="submit"]');
-      if (mfaSubmitBtn) {
-        mfaSubmitBtn.disabled = true;
-        mfaSubmitBtn.textContent = 'Verifying...';
-      }
-
-      // Get CSRF token for header
-      const csrfToken = document.getElementById('mfaCsrfTokenInput')?.value || '';
-
-      fetch('/login/mfa', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': csrfToken
-        },
-        credentials: 'include',
-        body: JSON.stringify(data)
-      }).then(async r => {
-        if (mfaSubmitBtn) {
-          mfaSubmitBtn.disabled = false;
-          // Text reset depends on whether it's "Verify" or "Verify & Enable MFA"
-          mfaSubmitBtn.textContent = 'Verify';
-        }
-        if (r.ok) {
-          const resultText = await r.text();
-          try {
-            const resultJson = JSON.parse(resultText);
-            const redirectUrl = resultJson.redirect || '/dashboard';
-            window.location = redirectUrl;
-          } catch (jsonError) {
-            // Fallback to dashboard if JSON parsing fails but response is OK
-            window.location = '/dashboard';
+      // Refresh CSRF token before MFA verification
+      fetch('/csrf-token', {credentials: 'include'})
+        .then(r => r.json())
+        .then(csrfData => {
+          // Include new CSRF token in body for JSON extraction or header
+          data.csrf_token = csrfData.csrf_token;
+          return fetch('/login/mfa', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': csrfData.csrf_token
+            },
+            credentials: 'include',
+            body: JSON.stringify(data)
+          });
+        }).then(async r => {
+          const mfaSubmitBtn = mfaVerifyForm.querySelector('button[type="submit"]');
+          if (mfaSubmitBtn) {
+            mfaSubmitBtn.disabled = false;
+            // Text reset depends on whether it's "Verify" or "Verify & Enable MFA"
+            mfaSubmitBtn.textContent = 'Verify';
           }
-        } else {
-          const msg = await r.text();
-          if (typeof Toastify === 'function') {
-            Toastify({
-              text: msg || 'MFA verification failed.',
-              duration: 3000,
-              close: true,
-              gravity: "top",
-              position: "right",
-              style: {
-                background: "white",
-                color: "black",
-                border: "1px solid #ccc"
-              },
-              stopOnFocus: true,
-            }).showToast();
+          if (r.ok) {
+            const resultText = await r.text();
+            try {
+              const resultJson = JSON.parse(resultText);
+              const redirectUrl = resultJson.redirect || '/dashboard';
+              window.location = redirectUrl;
+            } catch (jsonError) {
+              // Fallback to dashboard if JSON parsing fails but response is OK
+              window.location = '/dashboard';
+            }
           } else {
-            alert(msg || 'MFA verification failed.');
+            const msg = await r.text();
+            if (typeof Toastify === 'function') {
+              Toastify({
+                text: msg || 'MFA verification failed.',
+                duration: 3000,
+                close: true,
+                gravity: "top",
+                position: "right",
+                style: {
+                  background: "white",
+                  color: "black",
+                  border: "1px solid #ccc"
+                },
+                stopOnFocus: true,
+              }).showToast();
+            } else {
+              alert(msg || 'MFA verification failed.');
+            }
           }
-        }
-      }).catch(err => {
-        if (mfaSubmitBtn) {
-          mfaSubmitBtn.disabled = false;
-          mfaSubmitBtn.textContent = 'Verify';
-        }
-         if (typeof Toastify === 'function') {
-            Toastify({
-              text: 'Network error during MFA. Please try again.',
-              duration: 3000,
-              close: true,
-              gravity: "top",
-              position: "right",
-              style: {
-                background: "white",
-                color: "black",
-                border: "1px solid #ccc"
-              },
-              stopOnFocus: true,
-            }).showToast();
-        } else {
-          alert('Network error during MFA. Please try again.');
-        }
-        console.error('MFA fetch error:', err);
-      });
+        }).catch(err => {
+          const mfaSubmitBtn = mfaVerifyForm.querySelector('button[type="submit"]');
+          if (mfaSubmitBtn) {
+            mfaSubmitBtn.disabled = false;
+            mfaSubmitBtn.textContent = 'Verify';
+          }
+           if (typeof Toastify === 'function') {
+              Toastify({
+                text: 'Network error during MFA. Please try again.',
+                duration: 3000,
+                close: true,
+                gravity: "top",
+                position: "right",
+                style: {
+                  background: "white",
+                  color: "black",
+                  border: "1px solid #ccc"
+                },
+                stopOnFocus: true,
+              }).showToast();
+          } else {
+            alert('Network error during MFA. Please try again.');
+          }
+          console.error('MFA fetch error:', err);
+        });
     });
   }
 });

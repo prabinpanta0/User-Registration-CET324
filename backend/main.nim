@@ -14,7 +14,7 @@ import utils/email_sender
 import utils/jwt_utils
 import utils/totp_utils
 import utils/mfa_recovery_utils
-import times, strutils, json, random, options
+import times, strutils, json, random, options, sequtils
 import nimcrypto/sysrand as cryptoRandom # For cryptographically secure random bytes
 import nimcrypto # For hmac_sha1
 import postgres as pg # For health check constants
@@ -171,15 +171,13 @@ routes:
     if not verifyCsrf(request, isPreSession = true):
       resp Http403, "CSRF token validation failed."
       return
-    # Clear the double submit cookie after successful use
-    setCookie("csrf_token_value", "", expires = now() - 1.days)
-    
+
     let body = parseJson(request.body)
     let userOrEmail = body["username"].getStr
     let password = body["password"].getStr
-    
+
     echo "[DEBUG] Login attempt for: ", userOrEmail
-    
+
     # Basic validation
     if userOrEmail.len == 0 or password.len == 0:
       resp Http400, "Username and password required"
@@ -208,24 +206,31 @@ routes:
       return
     
     echo "[DEBUG] Login successful for user: ", user.username
+    echo "[DEBUG] User MFA status: enabled=", user.mfaEnabled
     
     # Check if user has MFA enabled
     if user.mfaEnabled:
       # Create temporary session for MFA verification
       let tempSession = createSession(user.id, temporary = true)
-      setCookie("temp_session", tempSession, expires = now() + 10.minutes)
+      # Set temp_session cookie path to root
+      setCookie("temp_session", tempSession, expires = now() + 10.minutes, path = "/", domain = "localhost")
       resp Http200, $(%*{"status": "mfa_required"})
+      return
     else:
       # Create regular session and redirect to MFA setup or dashboard
       let session = createSession(user.id, temporary = false)
-      setCookie("session", session, expires = now() + 7.days)
+      # Set session cookie path to root
+      setCookie("session", session, expires = now() + 7.days, path = "/", domain = "localhost")
+      
+      # Clear the CSRF double-submit cookie after final login
+      setCookie("csrf_token_value", "", expires = now() - 1.days)
       
       # Update last login time
       discard dbUpdateUserLastLogin(user.id)
       
       # Return success with redirect information
       resp Http200, $(%*{"status": "success", "redirect": "/mfa/setup"})
-    
+
     return
 
   # Dashboard API routes
@@ -321,6 +326,80 @@ routes:
     else:
       resp Http500, "Failed to revoke session."
 
+  # MFA Recovery Codes Status endpoint
+  get "/mfa/recovery-codes/status":
+    # Wrap in try to handle errors gracefully
+    try:
+      let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+      if sessionToken.len == 0:
+        resp Http401, "Not authenticated."
+        return
+
+      ensureDbConnection()
+
+      let currentSession = dbGetSessionByToken(sessionToken)
+      if currentSession.userId == 0:
+        resp Http401, "Invalid session."
+        return
+
+      let user = dbGetUserById(currentSession.userId)
+      if user.id == 0:
+        resp Http401, "User not found."
+        return
+
+      if not user.mfaEnabled:
+        resp Http200, $(%*{"has_codes": false, "count": 0, "mfa_enabled": false}), "application/json"
+        return
+
+      let hashedCodes = dbGetUserRecoveryCodes(user.id)
+      let count = hashedCodes.len
+
+      resp Http200, $(%*{
+        "has_codes": count > 0,
+        "count": count,
+        "mfa_enabled": true
+      }), "application/json"
+    except Exception as e:
+      echo "[ERROR] Exception in /mfa/recovery-codes/status: ", e.msg
+      resp Http500, $(%*{"error": "Internal Server Error"}), "application/json"
+
+  # MFA Recovery Codes Regenerate endpoint
+  post "/mfa/recovery-codes/regenerate":
+    let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+    if sessionToken.len == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+
+    # Ensure database connection
+    ensureDbConnection()
+    
+    let currentSession = dbGetSessionByToken(sessionToken)
+    if currentSession.userId == 0:
+      resp Http401, "Invalid session."
+      return
+    
+    let user = dbGetUserById(currentSession.userId)
+    if user.id == 0:
+      resp Http401, "User not found."
+      return
+
+    if not user.mfaEnabled:
+      resp Http400, "MFA is not enabled."
+      return
+
+    # Generate new recovery codes
+    let (newCodes, hashedCodes) = generateRecoveryCodes()
+    
+    if dbSetUserRecoveryCodes(user.id, hashedCodes):
+      resp Http200, $(%*{"status": "success", "recovery_codes": newCodes}), "application/json"
+    else:
+      resp Http500, "Failed to store new recovery codes."
+
   # CSRF token route
   get "/csrf-token":
     let sessionTokenCookie = request.cookies.getOrDefault("session", "")
@@ -350,9 +429,35 @@ routes:
     else:
       # For non-authenticated users, use double submit cookie pattern
       let newCsrfToken = generateSecureRandomToken()
-      setCookie("csrf_token_value", newCsrfToken, expires = now() + 30.minutes)
+      # Set path to "/" so cookie is available to all routes
+      setCookie("csrf_token_value", newCsrfToken, expires = now() + 30.minutes, path = "/")
       echo "[CSRF] Issued CSRF token via double submit cookie method."
       resp Http200, $(%*{"csrf_token": newCsrfToken}), "application/json"
+
+  # Logout endpoint
+  post "/logout":
+    let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+    if sessionToken.len == 0:
+      resp Http401, "Not authenticated."
+      return
+    
+    # CSRF Check (session-bound)
+    if not verifyCsrf(request):
+      resp Http403, "CSRF token validation failed."
+      return
+    
+    # Ensure database connection
+    ensureDbConnection()
+    
+    # Delete the session from database
+    if dbDeleteSession(sessionToken):
+      # Clear the session cookie
+      setCookie("session", "", expires = now() - 1.days, path = "/")
+      echo "[AUTH] User logged out successfully"
+      resp Http200, "Logged out successfully."
+    else:
+      echo "[AUTH ERROR] Failed to delete session during logout"
+      resp Http500, "Failed to logout."
 
   get "/captcha":
     let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -565,7 +670,7 @@ routes:
       if dbSetUserVerified(userId):
         # Automatically log in the user after email verification
         let session = createSession(userId, temporary = false)
-        setCookie("session", session, expires = now() + 7.days)
+        setCookie("session", session, expires = now() + 7.days, path = "/", domain = "localhost")
         
         # Update last login time
         discard dbUpdateUserLastLogin(userId)
@@ -704,6 +809,80 @@ routes:
       "recoveryCodes": plaintextCodes
     }
     resp Http200, $response
+
+  # MFA Login Route (for existing users with MFA enabled)
+  post "/login/mfa":
+    let tempSessionToken = if request.cookies.hasKey("temp_session"): request.cookies["temp_session"] else: ""
+    if tempSessionToken.len == 0:
+      resp Http401, "No temporary session found."
+      return
+
+    # No CSRF check here; temp_session token secures this route
+
+    # Ensure database connection
+    ensureDbConnection()
+    
+    let tempSession = dbGetSessionByToken(tempSessionToken)
+    if tempSession.userId == 0:
+      resp Http401, "Invalid temporary session."
+      return
+
+    let user = dbGetUserById(tempSession.userId)
+    if user.id == 0:
+      resp Http401, "User not found."
+      return
+
+    if not user.mfaEnabled:
+      resp Http400, "MFA is not enabled for this account."
+      return
+
+    let body = parseJson(request.body)
+    # Support both 'mfa_code' and 'mfa_recovery_code'
+    var code = ""
+    if body.hasKey("mfa_code"):
+      code = body["mfa_code"].getStr()
+    elif body.hasKey("mfa_recovery_code"):
+      code = body["mfa_recovery_code"].getStr()
+    else:
+      resp Http400, "MFA code is required."
+      return
+    # Trim whitespace
+    code = code.strip()
+
+    let ip = getClientIp(request)
+    if not isRequestAllowed(ip, mfaInitialVerifyConfig):
+      resp Http429, "Too many MFA verification attempts. Please try later."
+      return
+
+    # Get encrypted secret from database
+    let (encryptedSecret, iv) = dbGetUserMfaSecret(user.id)
+    if encryptedSecret.len == 0:
+      resp Http400, "No MFA secret found."
+      return
+
+    # Decrypt the secret
+    let secret = aesDecrypt(encryptedSecret, iv)
+    if secret.len == 0:
+      resp Http500, "Failed to decrypt MFA secret."
+      return
+
+    # Verify TOTP code
+    if not verifyTotp(secret, code):
+      resp Http400, "Invalid MFA code."
+      return
+
+    # MFA verification successful - create regular session and delete temporary session
+    let regularSession = createSession(user.id, temporary = false)
+    discard dbDeleteSession(tempSessionToken)
+    # Clear temp_session and set session cookie at root path
+    setCookie("temp_session", "", expires = now() - 1.days, path = "/", domain = "localhost")
+    setCookie("session", regularSession, expires = now() + 7.days, path = "/", domain = "localhost")
+    
+    # Update last login time
+    discard dbUpdateUserLastLogin(user.id)
+    
+    echo "[DEBUG] MFA login successful for user: ", user.username
+    resp Http200, $(%*{"status": "success", "redirect": "/dashboard"})
 
 # --- Main Execution ---
 

@@ -109,13 +109,12 @@ proc verifyPassword*(password: string, encodedHash: string): bool =
       
       echo "[DEBUG] Parsed params - m: ", m_cost, " t: ", t_cost, " p: ", p_lanes
       
-      # Manual verification: decode the salt from base64 to get raw bytes
-      let saltBytes = base64.decode(saltPart)
-      let saltStr = base64.encode(cast[string](saltBytes))
-      echo "[DEBUG] Using decoded salt bytes, length: ", saltBytes.len
+      # Decode the salt from base64 since it was base64 encoded in the hash
+      let decodedSaltBytes = base64.decode(saltPart)
+      echo "[DEBUG] Decoded salt from base64, original length: ", saltPart.len, " decoded length: ", decodedSaltBytes.len
       
-      # Re-hash with same parameters using raw salt bytes
-      let hashResult = argon2("id", password, saltStr, t_cost, m_cost, p_lanes, 32'u32)
+      # Re-hash with same parameters using the decoded salt
+      let hashResult = argon2("id", password, decodedSaltBytes, t_cost, m_cost, p_lanes, 32'u32)
       let computedHash = hashResult.enc
       
       echo "[DEBUG] Original hash: ", encodedHash

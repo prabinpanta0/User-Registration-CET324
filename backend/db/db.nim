@@ -266,6 +266,8 @@ proc dbGetUserByUsernameOrEmail*(userOrEmail: string): User =
     let nrows = pg.pqntuples(res)
     echo "[DB DEBUG] Number of rows returned: ", nrows
     if nrows > 0:
+      let mfaEnabledRaw = $pg.pqgetvalue(res, 0, 5)
+      echo "[DB DEBUG] Raw mfa_enabled value: '", mfaEnabledRaw, "'"
       var history: seq[string]
       let historyJson = $pg.pqgetvalue(res, 0, 10)
       if historyJson.len > 2: # Not empty '[]'
