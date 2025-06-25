@@ -2,9 +2,23 @@ local lapis = require("lapis")
 local http = require("socket.http")
 local app = lapis.Application()
 
--- Simple authentication check - just check if session cookie exists
+-- Enhanced authentication check - validate session with backend
 local function is_authenticated(cookies)
-  return cookies and cookies.session and cookies.session ~= ""
+  if not cookies or not cookies.session or cookies.session == "" then
+    return false
+  end
+  
+  -- Validate session with backend
+  local response, status = http.request{
+    url = "http://127.0.0.1:5000/session-check",
+    method = "GET",
+    timeout = 3,
+    headers = {
+      ["Cookie"] = "session=" .. cookies.session
+    }
+  }
+  
+  return status == 200
 end
 
 -- Backend health check function
@@ -149,6 +163,19 @@ app:get("/mfa/setup", function(self)
   -- This allows newly verified users to access the MFA setup page
   print("[DEBUG] Serving MFA setup page (no auth check)")
   return render_template("mfa_setup")
+end)
+
+-- Session check route for login page
+app:get("/session-check", function(self)
+  -- This route is used by the login page JavaScript
+  -- The actual authentication is handled by is_authenticated() which calls the backend
+  if is_authenticated(self.cookies) then
+    -- User is authenticated, return success
+    return {json = {authenticated = true, redirect = "/dashboard"}}
+  else
+    -- User is not authenticated
+    return {json = {authenticated = false}}
+  end
 end)
 
 app:get("/email-verification", function(self)

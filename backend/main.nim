@@ -122,17 +122,30 @@ proc createSession(userId: int, temporary: bool = false): string =
 
 proc getCurrentUser(request: Request): User =
   let sessionToken = if request.cookies.hasKey("session"): request.cookies["session"] else: ""
+  echo "[DEBUG] getCurrentUser - session token: ", if sessionToken.len > 0: sessionToken[0..10] & "..." else: "NONE"
+  echo "[DEBUG] getCurrentUser - all cookies: ", request.cookies
   if sessionToken.len == 0:
+    echo "[DEBUG] getCurrentUser - no session token found"
     return User()  # Return empty user if no session
   
   # Ensure database connection
   ensureDbConnection()
   
   let session = dbGetSessionByToken(sessionToken)
+  echo "[DEBUG] getCurrentUser - session lookup result: userId=", session.userId, " token=", if session.sessionToken.len > 0: session.sessionToken[0..10] & "..." else: "NONE"
   if session.userId == 0:
+    echo "[DEBUG] getCurrentUser - invalid session"
     return User()  # Return empty user if invalid session
   
   let user = dbGetUserById(session.userId)
+  echo "[DEBUG] getCurrentUser - user lookup result: id=", user.id, " username=", user.username
+  
+  # If user doesn't exist but session does, clean up the orphaned session
+  if user.id == 0 and session.userId != 0:
+    echo "[DEBUG] getCurrentUser - cleaning up orphaned session for deleted user: ", session.userId
+    discard dbDeleteSession(sessionToken)
+    return User()
+  
   return user
 
 # --- Jester Routes ---
@@ -212,15 +225,15 @@ routes:
     if user.mfaEnabled:
       # Create temporary session for MFA verification
       let tempSession = createSession(user.id, temporary = true)
-      # Set temp_session cookie path to root
-      setCookie("temp_session", tempSession, expires = now() + 10.minutes, path = "/", domain = "localhost")
+      # Set temp_session cookie
+      setCookie("temp_session", tempSession, expires = now() + 10.minutes, path = "/", httpOnly = true)
       resp Http200, $(%*{"status": "mfa_required"})
       return
     else:
       # Create regular session and redirect to MFA setup or dashboard
       let session = createSession(user.id, temporary = false)
-      # Set session cookie path to root
-      setCookie("session", session, expires = now() + 7.days, path = "/", domain = "localhost")
+      # Set session cookie
+      setCookie("session", session, expires = now() + 7.days, path = "/", httpOnly = true)
       
       # Clear the CSRF double-submit cookie after final login
       setCookie("csrf_token_value", "", expires = now() - 1.days)
@@ -670,7 +683,7 @@ routes:
       if dbSetUserVerified(userId):
         # Automatically log in the user after email verification
         let session = createSession(userId, temporary = false)
-        setCookie("session", session, expires = now() + 7.days, path = "/", domain = "localhost")
+        setCookie("session", session, expires = now() + 7.days, path = "/", httpOnly = true)
         
         # Update last login time
         discard dbUpdateUserLastLogin(userId)
@@ -725,6 +738,32 @@ routes:
   get "/email-verification":
     resp readFile("frontend/views/email_verification.lp")
 
+  # MFA Setup GET Route (for initial page load)
+  get "/mfa/setup":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+
+    let ip = getClientIp(request)
+    if not isRequestAllowed(ip, mfaSetupConfig):
+      resp Http429, "Too many MFA setup attempts. Please try later."
+      return
+
+    let secret = generateTotpSecret()
+    let (encSecret, iv) = aesEncrypt(secret)
+    if not dbSetUserMfaSecret(user.id, encSecret, iv):
+      resp Http500, "Failed to store MFA secret."
+      return
+
+    let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
+    let response = %*{
+      "otpauth": otpauth,
+      "secret": secret
+    }
+    # Note: Secret is included for manual entry. It's already in the QR code anyway.
+    resp Http200, $response
+
   # MFA Setup Route
   post "/mfa/setup":
     let user = getCurrentUser(request)
@@ -750,9 +789,10 @@ routes:
 
     let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
     let response = %*{
-      "otpauth": otpauth
+      "otpauth": otpauth,
+      "secret": secret
     }
-    # Security: Never return the plain text secret in API responses
+    # Note: Secret is included for manual entry. It's already in the QR code anyway.
     resp Http200, $response
 
   # MFA Verify Route  
@@ -874,15 +914,29 @@ routes:
     # MFA verification successful - create regular session and delete temporary session
     let regularSession = createSession(user.id, temporary = false)
     discard dbDeleteSession(tempSessionToken)
-    # Clear temp_session and set session cookie at root path
-    setCookie("temp_session", "", expires = now() - 1.days, path = "/", domain = "localhost")
-    setCookie("session", regularSession, expires = now() + 7.days, path = "/", domain = "localhost")
+    # Clear temp_session and set session cookie
+    setCookie("temp_session", "", expires = now() - 1.days, path = "/")
+    setCookie("session", regularSession, expires = now() + 7.days, path = "/", httpOnly = true)
     
     # Update last login time
     discard dbUpdateUserLastLogin(user.id)
     
     echo "[DEBUG] MFA login successful for user: ", user.username
     resp Http200, $(%*{"status": "success", "redirect": "/dashboard"})
+
+  # Session check endpoint for frontend authentication validation
+  get "/session-check":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, $(%*{"authenticated": false})
+      return
+    
+    resp Http200, $(%*{
+      "authenticated": true,
+      "user_id": user.id,
+      "username": user.username,
+      "mfa_enabled": user.mfaEnabled
+    })
 
 # --- Main Execution ---
 

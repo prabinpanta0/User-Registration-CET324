@@ -10,10 +10,8 @@ import ../db/models # For Session model
 proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
   var submittedToken: string
 
-  # Debug: Show all request parameters
-  echo "[CSRF DEBUG] All request params:"
-  for key, val in request.params:
-    echo "[CSRF DEBUG]   ", key, " = '", val, "'"
+  # Debug: Show request parameter count only (security: never log actual values)
+  echo "[CSRF DEBUG] Request params count: ", request.params.len
   
   # Try to get token from form parameters (common for standard HTML forms)
   # In Jester, form data is typically accessed through request.params
@@ -61,7 +59,7 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
     elif request.headers.hasKey("x-csrf-token"):
       headerToken = request.headers["x-csrf-token"]
     if headerToken.len > 0:
-      echo "[CSRF DEBUG] Token from headers: '", headerToken, "'"
+      echo "[CSRF DEBUG] Token from headers: [REDACTED]" # Security: Never log actual tokens
       # Handle case where header contains a JSON string instead of plain token
       if headerToken.startsWith("{") and headerToken.endsWith("}"):
         echo "[CSRF DEBUG] Header token appears to be JSON, attempting to parse..."
@@ -94,7 +92,7 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
       # The calling route should handle deleting/expiring the csrf_token_value cookie.
       return true
     else:
-      echo "[CSRF FAIL] Pre-session CSRF token mismatch. Submitted: '", submittedToken, "', Cookie: '", cookieToken, "'"
+      echo "[CSRF FAIL] Pre-session CSRF token mismatch. Submitted: [REDACTED], Cookie: [REDACTED]" # Security: Never log actual tokens
       return false
   else:
     # Synchronizer Token Pattern: Compare with token in session (DB)
@@ -113,7 +111,7 @@ proc verifyCsrf*(request: Request, isPreSession: bool = false): bool =
       echo "[CSRF OK] Session CSRF token matches for user ID: ", userSession.userId
       return true
     else:
-      echo "[CSRF FAIL] Session CSRF token mismatch for user ID: ", userSession.userId, ". Submitted: '", submittedToken, "', Session stores: '", userSession.csrfToken, "'"
+      echo "[CSRF FAIL] Session CSRF token mismatch for user ID: ", userSession.userId, ". Submitted: [REDACTED], Session stores: [REDACTED]" # Security: Never log actual tokens
       return false
 
 # Helper to be called by routes after successful pre-session CSRF verification  
