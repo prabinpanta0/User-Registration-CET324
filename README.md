@@ -1,6 +1,8 @@
-# ACS Assignment - CET324 Advanced Cyber Security
+# CET324 Advanced Cyber Security Assignment
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![University of Sunderland](https://img.shields.io/badge/University%20of%20Sunderland-maroon.svg)](https://www.sunderland.ac.uk/)
+[![Student ID](https://img.shields.io/badge/Student%20ID-240477541-blue.svg)](https://www.sunderland.ac.uk/)
 [![Nim](https://img.shields.io/badge/Nim-1.6+-blue.svg)](https://nim-lang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-blue.svg)](https://postgresql.org/)
 [![OpenResty](https://img.shields.io/badge/OpenResty-Latest-green.svg)](https://openresty.org/)
@@ -13,7 +15,7 @@ This is a **prototype secure web application** developed for **CET324 - Advanced
 
 ### Academic Context
 **Course**: CET324 - Advanced Cyber Security  
-**Assignment**: Part 1 - System Design (50 marks)  
+**Assignment**: Assignment 2 Part 1 - System Design  
 **Objective**: Design and implement a secure user registration system with robust cybersecurity principles
 
 ### Assignment Requirements Fulfilled
