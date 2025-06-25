@@ -43,6 +43,6 @@ when isMainModule:
   # Example usage:
   randomize() # Ensure random seed
   let (plain, hashed) = generateRecoveryCodes()
-  echo "Plaintext codes: ", plain
-  echo "Hashed codes: ", hashed
-  echo "Hashed of first plain code: ", hashRecoveryCode(plain[0])
+  echo "Generated ", plain.len, " plaintext recovery codes"
+  echo "Generated ", hashed.len, " hashed recovery codes"
+  echo "Sample hash test completed"

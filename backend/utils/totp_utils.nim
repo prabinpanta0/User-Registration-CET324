@@ -87,11 +87,11 @@ proc totp*(secret: string, time: int64 = epochTime().int64, digits: int = 6, per
 proc verifyTotp*(secret: string, code: string, period: int = 30, window: int = 1): bool =
   # Accept codes for current, previous, and next time windows (window = 1 means -1, 0, +1 periods)
   let now = epochTime().int64
-  echo "[DEBUG] TOTP Verify - Input code: '", code, "' secret length: ", secret.len
+  echo "[DEBUG] TOTP Verify - Input code length: ", code.len, " secret length: ", secret.len
   for offset in -window..window:
     let t = now + offset * period
     let expectedCode = totp(secret, t, 6, period) # Fixed to always use 6 digits
-    echo "[DEBUG] TOTP Verify - Expected code for offset ", offset, ": '", expectedCode, "'"
+    echo "[DEBUG] TOTP Verify - Checking code for offset ", offset
     if expectedCode == code:
       echo "[DEBUG] TOTP Verify - MATCH found at offset ", offset
       return true

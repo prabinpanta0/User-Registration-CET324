@@ -1,4 +1,16 @@
 document.addEventListener('DOMContentLoaded', function() {
+  // Redirect authenticated users directly to dashboard
+  fetch('/session-check', { credentials: 'include' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.authenticated) {
+        window.location = '/dashboard';
+      }
+    })
+    .catch(err => {
+      console.error('Session check failed:', err);
+    });
+
   // Get reCAPTCHA site key from global variable or body data attribute as fallback
   if (!window.RECAPTCHA_SITE_KEY) {
     window.RECAPTCHA_SITE_KEY = document.body.getAttribute('data-recaptcha-site-key');

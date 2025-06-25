@@ -6,9 +6,9 @@ proc testPassword() =
   echo "Testing password hashing and verification..."
   let testPassword = "TestPassword123!"
   
-  echo "[TEST] Hashing password: ", testPassword
+  echo "[TEST] Hashing password: [REDACTED]" # Security: Never log passwords
   let hash = hashPassword(testPassword)
-  echo "[TEST] Generated hash: ", hash
+  echo "[TEST] Generated hash: [REDACTED]" # Security: Never log hashes
   
   echo "[TEST] Verifying correct password..."
   let verifyCorrect = verifyPassword(testPassword, hash)

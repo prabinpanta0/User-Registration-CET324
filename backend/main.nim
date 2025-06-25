@@ -117,7 +117,7 @@ proc createSession(userId: int, temporary: bool = false): string =
     # 7 days for regular session
     $((epochTime().int64 + 604800))
 
-  echo "[DEBUG] Creating session for userId=", userId, " token=", if result.len > 10: result[0..10] & "..." else: result, " expiresAt=", expiresAt
+  echo "[DEBUG] Creating session for userId=", userId, " token=", if result.len > 10: "[REDACTED]" else: "[REDACTED]", " expiresAt=", expiresAt
   discard dbInsertSession(userId, result, expiresAt)
 
 proc getCurrentUser(request: Request): User =
@@ -313,7 +313,7 @@ routes:
     
     let sessionIdToRevoke = parseInt(@"id")
     echo "[DEBUG] Revoking session ", sessionIdToRevoke, " for user ", currentSession.userId
-    echo "[DEBUG] Current session ID: ", currentSession.id, " token: ", currentSession.sessionToken[0..10], "..."
+    echo "[DEBUG] Current session ID: ", currentSession.id, " token: [REDACTED]" # Security: Never log session tokens
     
     # Prevent revoking current session
     if sessionIdToRevoke == currentSession.id:
@@ -750,9 +750,9 @@ routes:
 
     let otpauth = "otpauth://totp/SecureApp:" & user.username & "?secret=" & secret & "&issuer=SecureApp"
     let response = %*{
-      "secret": secret,
       "otpauth": otpauth
     }
+    # Security: Never return the plain text secret in API responses
     resp Http200, $response
 
   # MFA Verify Route  

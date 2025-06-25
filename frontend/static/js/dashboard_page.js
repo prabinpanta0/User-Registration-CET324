@@ -52,10 +52,17 @@ document.addEventListener('DOMContentLoaded', function() {
     .then(r => {
       if (r.ok) {
         return r.json();
-      } else {
-        window.location = '/login'; // Redirect if not authenticated
-        throw new Error('Not authenticated');
       }
+      // If MFA setup is required, redirect appropriately
+      if (r.status === 403) {
+        return r.json().then(data => {
+          window.location = data.redirect || '/mfa/setup';
+          throw new Error('Redirecting to MFA setup');
+        });
+      }
+      // For other unauthorized, send to login
+      window.location = '/login';
+      throw new Error('Not authenticated');
     })
     .then(data => {
       if (usernameEl) usernameEl.textContent = data.username || 'N/A';
@@ -333,41 +340,48 @@ document.addEventListener('DOMContentLoaded', function() {
   const downloadExistingRecoveryCodesBtn = document.getElementById('downloadExistingRecoveryCodesBtn');
   if (downloadExistingRecoveryCodesBtn) {
     downloadExistingRecoveryCodesBtn.addEventListener('click', function() {
-      // Fetch CSRF token, regenerate codes, then download them
-      fetch('/csrf-token', { credentials: 'include' })
-        .then(r => r.json())
-        .then(csrfData => {
-          return fetch('/mfa/recovery-codes/regenerate', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-CSRF-Token': csrfData.csrf_token
-            },
-            credentials: 'include'
-          });
-        })
+      // Check remaining codes first
+      fetch('/mfa/recovery-codes/status', { credentials: 'include' })
         .then(r => {
-          if (!r.ok) throw new Error('Failed to regenerate codes: ' + r.status);
+          if (!r.ok) throw new Error('Failed to fetch recovery code status');
           return r.json();
         })
-        .then(data => {
-          if (data.status === 'success' && data.recovery_codes) {
-            const codesText = 'Your MFA Recovery Codes for SecureApp:\n\n' + data.recovery_codes.join('\n') + '\n\nSave these codes in a secure place. Each code can only be used once.';
-            const blob = new Blob([codesText], { type: 'text/plain;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'secureapp-recovery-codes.txt';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          } else {
-            throw new Error(data.message || 'Unknown error during code regeneration.');
+        .then(statusData => {
+          if (statusData.count > 0) {
+            alert(`You still have ${statusData.count} recovery code(s) remaining. Only regenerate when all codes are used.`);
+            return;
           }
+          // All codes used: regenerate and download
+          return fetch('/csrf-token', { credentials: 'include' })
+            .then(r => r.json())
+            .then(csrfData => fetch('/mfa/recovery-codes/regenerate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfData.csrf_token },
+              credentials: 'include'
+            }))
+            .then(r => {
+              if (!r.ok) throw new Error('Failed to regenerate codes: ' + r.status);
+              return r.json();
+            })
+            .then(data => {
+              if (data.status === 'success' && data.recovery_codes) {
+                const codesText = 'Your MFA Recovery Codes for SecureApp:\n\n' + data.recovery_codes.join('\n') + '\n\nSave these codes in a secure place. Each code can only be used once.';
+                const blob = new Blob([codesText], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'secureapp-recovery-codes.txt';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              } else {
+                throw new Error(data.message || 'Unknown error during code regeneration.');
+              }
+            });
         })
         .catch(err => {
-          console.error('Error regenerating/downloading recovery codes:', err);
+          console.error(err);
           alert('Error: ' + err.message);
         });
     });

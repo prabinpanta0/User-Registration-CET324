@@ -61,7 +61,7 @@ proc hashPassword*(password: string): string =
     # Use the full argon2 function: argon2(type, pwd, salt, iterations, memory, threads, hashlen)
     let hashResult = argon2("id", password, saltB64, t_cost.uint32, m_cost.uint32, p_lanes.uint32, 32'u32)
     result = hashResult.enc # Return the encoded hash string
-    echo "[DEBUG] Generated hash: ", result
+    echo "[DEBUG] Generated hash: [REDACTED]" # Security: Never log actual hashes
   except Exception as e:
     echo "[ERROR] Error hashing password with Argon2: ", e.msg
     raise
@@ -69,7 +69,7 @@ proc hashPassword*(password: string): string =
 proc verifyPassword*(password: string, encodedHash: string): bool =
   # For argon2 verification, try to use the built-in verify function first
   try:
-    echo "[DEBUG] Argon2 verify input - password length: ", password.len, " hash: ", encodedHash
+    echo "[DEBUG] Argon2 verify input - password length: ", password.len, " hash: [REDACTED]" # Security: Never log actual hashes
     
     # Try different argon2 verify function names that might be available
     when declared(argon2_verify):
@@ -117,8 +117,8 @@ proc verifyPassword*(password: string, encodedHash: string): bool =
       let hashResult = argon2("id", password, decodedSaltBytes, t_cost, m_cost, p_lanes, 32'u32)
       let computedHash = hashResult.enc
       
-      echo "[DEBUG] Original hash: ", encodedHash
-      echo "[DEBUG] Computed hash: ", computedHash
+      echo "[DEBUG] Original hash: [REDACTED]" # Security: Never log actual hashes
+      echo "[DEBUG] Computed hash: [REDACTED]" # Security: Never log actual hashes
       
       result = computedHash == encodedHash
       echo "[DEBUG] Argon2 verify result: ", result

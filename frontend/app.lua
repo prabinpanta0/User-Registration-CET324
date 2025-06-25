@@ -113,23 +113,17 @@ end
 
 -- Frontend page routes
 app:get("/", function(self)
-  if is_authenticated(self.cookies) then
-    return { redirect_to = "/dashboard" }
-  end
+  -- Always render login page; client-side will handle redirect after session-check
   return render_template("login")
 end)
 
 app:get("/login", function(self)
-  if is_authenticated(self.cookies) then
-    return { redirect_to = "/dashboard" }
-  end
+  -- Always render login page to allow session validation or renewal
   return render_template("login")
 end)
 
 app:get("/register", function(self)
-  if is_authenticated(self.cookies) then
-    return { redirect_to = "/dashboard" }
-  end
+  -- Always render register page
   return render_template("register")
 end)
 
@@ -160,6 +154,11 @@ end)
 app:get("/email-verification", function(self)
   -- Email verification page doesn't require authentication
   return render_template("email_verification")
+end)
+
+app:get("/forgot-password", function(self)
+  -- Render forgot password page
+  return render_template("forgot_password")
 end)
 
 -- Static file serving

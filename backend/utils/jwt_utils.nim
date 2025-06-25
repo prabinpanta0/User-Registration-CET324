@@ -63,7 +63,7 @@ when isMainModule:
   echo "Generating token with 60s expiry..."
   let token = generateJwtToken(claims, 60)
   if token.len > 0:
-    echo "Generated token: ", token
+    echo "Generated token: [REDACTED]" # Security: Never log actual tokens
 
     echo "\nValidating token (should be valid):"
     let validatedClaims = validateJwtToken(token)
@@ -79,7 +79,7 @@ when isMainModule:
     echo "\nGenerating token with 1s expiry for expiry test..."
     let shortLivedToken = generateJwtToken(claims, 1)
     if shortLivedToken.len > 0:
-      echo "Generated short-lived token: ", shortLivedToken
+      echo "Generated short-lived token: [REDACTED]" # Security: Never log actual tokens
       echo "Waiting for 2 seconds to ensure expiry..."
       sleep(2000)
       echo "Validating short-lived token (should be expired):"

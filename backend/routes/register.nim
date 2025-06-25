@@ -206,7 +206,7 @@ routes:
 
     # Generate a 6-digit verification code
     let verificationCode = genVerificationCode()
-    echo "[INFO] Verification code for ", user.email, ": ", verificationCode
+    echo "[INFO] Verification code generated for user: ", user.email
     let codeStored = dbCreateVerificationCode(user.id, verificationCode, 24)
     echo "[DEBUG] Code stored in DB: ", codeStored
 

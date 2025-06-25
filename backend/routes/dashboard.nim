@@ -131,6 +131,38 @@ routes:
       return
     resp Http200, "Session terminated."
 
+  # Frontend expects GET /dashboard/info
+  get "/dashboard/info":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+    # Enforce MFA setup for new users
+    if not user.mfaEnabled:
+      resp Http403, %*{
+        "error": "MFA setup required",
+        "redirect": "/mfa/setup",
+        "message": "You must set up MFA before accessing the dashboard."
+      }
+      return
+    let expired = isPasswordExpired(user.passwordLastChanged)
+    resp Http200, %*{
+      "username": user.username,
+      "email": user.email,
+      "last_login": user.lastLogin,
+      "mfa_enabled": user.mfaEnabled,
+      "password_expired": expired
+    }
+
+  # Frontend expects GET /dashboard/sessions
+  get "/dashboard/sessions":
+    let user = getCurrentUser(request)
+    if user.id == 0:
+      resp Http401, "Not authenticated."
+      return
+    let sessions = listSessionsForUser(user.id)
+    resp Http200, %*sessions
+
   get "/mfa/recovery-codes/status":
     let user = getCurrentUser(request)
     if user.id == 0:

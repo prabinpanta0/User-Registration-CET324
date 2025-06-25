@@ -43,16 +43,16 @@ when isMainModule:
   # Example Usage (for testing purposes)
   echo "Running HIBP check example..."
   let testPasswords = @["password123", "P@$$wOrd", "thisIsAStrongPassword123!"]
-  for pw in testPasswords:
+  for i, pw in testPasswords:
     let pwned = waitFor isPasswordPwned(pw)
-    echo "Password '", pw, "' pwned status: ", pwned
+    echo "Test password #", i+1, " pwned status: ", pwned
 
   # Test with a known pwned password (e.g. "password")
   let knownPwned = "password"
   let pwnedStatus = waitFor isPasswordPwned(knownPwned)
-  echo "Password '", knownPwned, "' pwned status: ", pwnedStatus
+  echo "Known weak password pwned status: ", pwnedStatus
 
   # Test with a likely not pwned password
   let likelyNotPwned = "SuperSecurePassword123!@#" & $getTime().toUnix()
   let notPwnedStatus = waitFor isPasswordPwned(likelyNotPwned)
-  echo "Password '", likelyNotPwned, "' pwned status: ", notPwnedStatus
+  echo "Strong password pwned status: ", notPwnedStatus
