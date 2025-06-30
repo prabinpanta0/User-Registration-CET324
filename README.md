@@ -303,6 +303,11 @@ ASSIGNMENT_ACS/
 └── .env.example           # Environment configuration template
 ```
 
+### System Architecture Overview
+
+![Architecture Overview](shared/images/architecture_overview.png)
+*Complete system architecture showing frontend-backend separation, security layers, and data flow*
+
 ### Data Flow Diagram
 
 ```mermaid
@@ -335,16 +340,350 @@ flowchart TB
 
 ## Installation
 
-### Prerequisites
+### Prerequisites & Installation Guide
 
-Ensure you have the following installed on your system:
+This section provides comprehensive installation instructions for all required dependencies.
 
-- **Bash shell** (Linux/macOS/WSL)
-- **Nim** (>= 1.6) & **Nimble** package manager
-- **PostgreSQL** (>= 12) database server
-- **OpenResty** / Nginx & **LuaRocks**
-- **Python 3** (for email functionality)
-- `lapis` CLI (optional, for custom builds)
+#### System Requirements
+- **Operating System**: Linux, macOS, or Windows with WSL
+- **Memory**: At least 2GB RAM recommended
+- **Storage**: 1GB free space
+- **Network**: Internet connection for package downloads
+
+#### 1. Bash Shell (Linux/macOS/WSL)
+
+**Linux**: Pre-installed on most distributions
+```bash
+# Verify bash installation
+bash --version
+```
+
+**macOS**: Pre-installed
+```bash
+# Verify bash installation  
+bash --version
+```
+
+**Windows**: Install Windows Subsystem for Linux (WSL)
+```powershell
+# Run in PowerShell as Administrator
+wsl --install
+# Restart computer and set up Ubuntu/Debian
+```
+
+#### 2. Nim (>= 1.6) & Nimble Package Manager
+
+**Linux (Ubuntu/Debian)**:
+```bash
+# Method 1: Official installer (recommended)
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+source ~/.bashrc
+
+# Method 2: Package manager
+sudo apt update
+sudo apt install nim
+
+# Verify installation
+nim --version
+nimble --version
+```
+
+**macOS**:
+```bash
+# Using Homebrew (recommended)
+brew install nim
+
+# Using choosenim
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+source ~/.bashrc
+
+# Verify installation
+nim --version
+nimble --version
+```
+
+**Windows (WSL)**:
+```bash
+# Follow Linux instructions above in WSL terminal
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+source ~/.bashrc
+```
+
+#### 3. PostgreSQL (>= 12) Database Server
+
+**Linux (Ubuntu/Debian)**:
+```bash
+# Install PostgreSQL
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+
+# Start and enable PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Set up user (optional)
+sudo -u postgres createuser --interactive
+```
+
+**macOS**:
+```bash
+# Using Homebrew
+brew install postgresql
+brew services start postgresql
+
+# Or using Postgres.app (GUI option)
+# Download from https://postgresapp.com/
+```
+
+**Windows (WSL)**:
+```bash
+# Install in WSL
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo service postgresql start
+
+# Configure auto-start
+echo 'sudo service postgresql start' >> ~/.bashrc
+```
+
+#### 4. OpenResty / Nginx & LuaRocks
+
+**Linux (Ubuntu/Debian)**:
+```bash
+# Install OpenResty (recommended)
+wget -qO - https://openresty.org/package/pubkey.gpg | sudo apt-key add -
+sudo apt-get -y install software-properties-common
+sudo add-apt-repository -y "deb http://openresty.org/package/ubuntu $(lsb_release -sc) main"
+sudo apt-get update
+sudo apt-get install openresty
+
+# Install LuaRocks
+sudo apt install luarocks
+
+# Install Lapis framework
+sudo luarocks install lapis
+```
+
+**macOS**:
+```bash
+# Using Homebrew
+brew install openresty/brew/openresty
+brew install luarocks
+
+# Install Lapis framework
+luarocks install lapis
+```
+
+**Alternative (Standard Nginx + Lua)**:
+```bash
+# If OpenResty not available
+sudo apt install nginx lua5.1 liblua5.1-0-dev luarocks
+# or on macOS: brew install nginx lua luarocks
+```
+
+#### 5. Python 3 (for email functionality)
+
+**Linux (Ubuntu/Debian)**:
+```bash
+# Install Python 3 and pip
+sudo apt update
+sudo apt install python3 python3-pip python3-venv
+
+# Verify installation
+python3 --version
+pip3 --version
+```
+
+**macOS**:
+```bash
+# Using Homebrew
+brew install python
+
+# Or download from python.org
+# Verify installation
+python3 --version
+pip3 --version
+```
+
+**Windows (WSL)**:
+```bash
+# Usually pre-installed in WSL, but if needed:
+sudo apt install python3 python3-pip
+```
+
+#### 6. Node.js & NPM (for Tailwind CSS)
+
+**Linux (Ubuntu/Debian)**:
+```bash
+# Method 1: NodeSource repository (recommended)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Method 2: Using snap
+sudo snap install node --classic
+
+# Verify installation
+node --version
+npm --version
+```
+
+**macOS**:
+```bash
+# Using Homebrew
+brew install node
+
+# Or download from nodejs.org
+# Verify installation
+node --version
+npm --version
+```
+
+**Windows (WSL)**:
+```bash
+# Follow Linux instructions above
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+#### 7. Additional Development Tools
+
+**Git** (if not already installed):
+```bash
+# Linux
+sudo apt install git
+
+# macOS
+brew install git
+# or: xcode-select --install
+
+# Verify
+git --version
+```
+
+**Build Tools**:
+```bash
+# Linux
+sudo apt install build-essential
+
+# macOS
+xcode-select --install
+
+# Windows (WSL)
+sudo apt install build-essential
+```
+
+#### 8. Project Dependencies Installation
+
+After installing all prerequisites:
+
+```bash
+# Clone the project
+git clone https://github.com/prabinpanta0/User-Regestration--CET324_ASSIGNMENT-
+cd ASSIGNMENT_ACS
+
+# Install Tailwind CSS dependencies (for styling)
+npm install
+
+# Verify Tailwind installation
+npx tailwindcss --help
+
+# Install Nim dependencies (managed automatically)
+# Backend dependencies are automatically resolved via nimbledeps/
+
+# Python email dependencies (usually pre-installed)
+# These are part of Python standard library:
+# - smtplib (SMTP client)
+# - email (email message handling)
+# - ssl (secure email connections)
+
+# Optional: Install Lapis CLI globally
+luarocks install lapis
+```
+
+**Note**: The project uses minimal dependencies by design for security and maintainability:
+- **Frontend**: Tailwind CSS for styling (via npm)
+- **Backend**: Pure Nim with standard library modules
+- **Email**: Python standard library modules
+- **Database**: PostgreSQL with pure Nim database drivers
+
+### Verification Commands
+
+Run these to verify all installations:
+
+```bash
+# Core tools
+bash --version
+nim --version
+nimble --version
+psql --version
+nginx -v
+luarocks --version
+python3 --version
+node --version
+npm --version
+
+# Project-specific
+git --version
+gcc --version  # or clang --version on macOS
+
+# Test database connection
+sudo -u postgres psql -c "SELECT version();"
+```
+
+### Troubleshooting Installation
+
+#### Common Issues & Solutions
+
+**PostgreSQL Connection Issues**:
+```bash
+# If PostgreSQL doesn't start
+sudo systemctl status postgresql
+sudo systemctl start postgresql
+
+# If database doesn't exist
+sudo -u postgres createdb acs_assignment
+
+# Permission issues
+sudo -u postgres psql -c "ALTER USER $USER CREATEDB;"
+```
+
+**Nim Installation Issues**:
+```bash
+# If nim command not found
+echo 'export PATH=$HOME/.nimble/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+
+# If choosenim fails
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+```
+
+**OpenResty/Nginx Issues**:
+```bash
+# If OpenResty not available, use standard nginx
+sudo apt install nginx lua5.1 liblua5.1-0-dev
+sudo luarocks install lapis
+
+# Check if running on port 80/8080
+sudo netstat -tlnp | grep :80
+```
+
+**Node.js/NPM Issues**:
+```bash
+# If node version is too old
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Clear npm cache if installation fails
+npm cache clean --force
+```
+
+**Permission Issues**:
+```bash
+# If global package installation fails
+npm config set prefix ~/.npm-global
+echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+```
 
 ### Quick Start
 
@@ -354,7 +693,13 @@ Ensure you have the following installed on your system:
    cd ASSIGNMENT_ACS
    ```
 
-2. **One-Command Setup & Start** ⚡
+2. **Install Dependencies** 
+   ```bash
+   # Install Tailwind CSS for frontend styling
+   npm install
+   ```
+
+3. **One-Command Setup & Start** ⚡
    ```bash
    ./start.sh start
    ```
@@ -367,7 +712,7 @@ Ensure you have the following installed on your system:
    
    **Manual Setup** (if you prefer individual steps):
 
-3. **Setup Database** (Optional - done automatically)
+4. **Setup Database** (Optional - done automatically)
    ```bash
    # Start PostgreSQL
    sudo systemctl start postgresql
@@ -378,14 +723,14 @@ Ensure you have the following installed on your system:
    psql acs_assignment < shared/init_schema.sql
    ```
 
-4. **Configure Environment** (Optional for basic testing)
+5. **Configure Environment** (Optional for basic testing)
    ```bash
    # Copy and edit environment variables
    cp .env.example .env
    # Edit .env with your SMTP, database, and security keys
    ```
 
-5. **Individual Services** (Optional)
+6. **Individual Services** (Optional)
    ```bash
    ./start.sh backend    # Backend only (includes PostgreSQL + compilation)
    ./start.sh frontend   # Frontend only
@@ -584,3 +929,10 @@ See the full terms in [LICENSE](LICENSE).
 ---
 
 *Built with ❤️ using Nim, OpenResty, and modern security practices*
+
+```nim
+if day == "bad":
+  echo "Code"
+else:
+  echo "Code anyway, we can't dream"
+ ```
